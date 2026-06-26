@@ -70,13 +70,16 @@ pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Ensure the internal GL accounts the card rails post against exist.
-    if let Err(e) = handlers::cards::ensure_system_accounts(&pool).await {
-        warn!("❌ Failed to bootstrap system GL accounts: {}", e);
-        std::process::exit(1);
-    }
+    let system_accounts = match handlers::cards::ensure_system_accounts(&pool).await {
+        Ok(accs) => accs,
+        Err(e) => {
+            warn!("❌ Failed to bootstrap system GL accounts: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     // Create application router
-    let app = create_router(pool, &settings).await;
+    let app = create_router(pool, &settings, system_accounts).await;
 
     // Start server
     let listener = tokio::net::TcpListener::bind(&settings.server_address()).await?;
@@ -93,6 +96,7 @@ pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
 pub async fn create_router(
     pool: config::database::DatabasePool,
     settings: &Settings,
+    system_accounts: handlers::cards::SystemAccounts,
 ) -> Router {
     // CORS configuration for web frontend
     let cors = CorsLayer::new()
@@ -106,6 +110,7 @@ pub async fn create_router(
     let app_state = handlers::AppState {
         pool: pool.clone(),
         settings: settings.clone(),
+        system_accounts,
     };
 
     // Build the router

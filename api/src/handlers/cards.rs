@@ -261,7 +261,7 @@ async fn capture(
     let (card_id, amount, reason) = hold;
     let merchant = reason.strip_prefix("visa_auth:").unwrap_or(&reason).to_string();
 
-    let system = ensure_system_accounts(&state.pool).await?;
+    let system = state.system_accounts;
 
     // Lock both legs (card first, then clearing).
     let card = fetch_account_for_update(&mut tx, card_id)
@@ -343,7 +343,7 @@ struct SettleResponse {
 async fn settle(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<SettleResponse>), AppError> {
-    let system = ensure_system_accounts(&state.pool).await?;
+    let system = state.system_accounts;
 
     let mut tx = state.pool.begin().await?;
 

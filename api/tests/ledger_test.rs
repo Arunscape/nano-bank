@@ -23,7 +23,8 @@ async fn test_ledger_transactions() {
     // 1. Setup
     let settings = Settings::new().unwrap_or_default();
     let pool = create_connection_pool(&settings).await.expect("Failed to connect to test db");
-    let app = create_router(pool, &settings).await;
+    let system_accounts = nano_bank_api::handlers::cards::ensure_system_accounts(&pool).await.expect("Failed to bootstrap system accounts");
+    let app = create_router(pool, &settings, system_accounts).await;
 
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
     
