@@ -95,7 +95,8 @@ pub struct DepositRequest {
     #[validate(length(min = 1, max = 255))]
     pub description: String,
 
-    pub external_reference: Option<String>,
+    // Idempotency key to prevent duplicate deposits
+    pub idempotency_key: Option<String>,
 }
 
 // Withdrawal Request
@@ -108,7 +109,8 @@ pub struct WithdrawalRequest {
     #[validate(length(min = 1, max = 255))]
     pub description: String,
 
-    pub external_reference: Option<String>,
+    // Idempotency key to prevent duplicate withdrawals
+    pub idempotency_key: Option<String>,
 }
 
 // Transaction Reversal Entity

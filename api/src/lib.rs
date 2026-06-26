@@ -25,7 +25,7 @@ use tower_http::{
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,22 +50,22 @@ pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
             pool
         }
         Err(e) => {
-            warn!("❌ Failed to connect to database: {}", e);
-            warn!("💡 Make sure your PostgreSQL cluster is running:");
-            warn!("   cd ~/dev/nano-bank && ./k8s/deploy.sh");
+            error!("❌ Failed to connect to database: {}", e);
+            error!("💡 Make sure your PostgreSQL cluster is running:");
+            error!("   cd ~/dev/nano-bank && ./k8s/deploy.sh");
             std::process::exit(1);
         }
     };
 
     // Run database health check
     if let Err(e) = config::database::health_check(&pool).await {
-        warn!("❌ Database health check failed: {}", e);
+        error!("❌ Database health check failed: {}", e);
         std::process::exit(1);
     }
 
     // Verify schema is in place
     if let Err(e) = config::database::run_migrations(&pool).await {
-        warn!("❌ Migration check failed: {}", e);
+        error!("❌ Migration check failed: {}", e);
         std::process::exit(1);
     }
 
@@ -73,7 +73,7 @@ pub async fn run_server() -> Result<(), Box<dyn std::error::Error>> {
     let system_accounts = match handlers::cards::ensure_system_accounts(&pool).await {
         Ok(accs) => accs,
         Err(e) => {
-            warn!("❌ Failed to bootstrap system GL accounts: {}", e);
+            error!("❌ Failed to bootstrap system GL accounts: {}", e);
             std::process::exit(1);
         }
     };

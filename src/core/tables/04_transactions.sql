@@ -28,7 +28,8 @@ CREATE TABLE transactions (
         (status = 'completed' AND completed_at IS NOT NULL) OR
         (status = 'failed' AND failed_at IS NOT NULL) OR
         (status IN ('pending', 'cancelled', 'reversed'))
-    )
+    ),
+    UNIQUE(initiated_by, external_reference)
 );
 
 -- Double-entry bookkeeping entries

@@ -286,12 +286,12 @@ async fn deposit_money(
     }
 
     // Check idempotency key for deposit (scoped to the account's customer)
-    if let Some(ref external_ref) = req.external_reference {
+    if let Some(ref idempotency_key) = req.idempotency_key {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM transactions WHERE initiated_by = $1 AND external_reference = $2)"
         )
         .bind(customer_account.customer_id)
-        .bind(external_ref)
+        .bind(idempotency_key)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -315,7 +315,7 @@ async fn deposit_money(
     .bind(amount)
     .bind(&req.description)
     .bind(customer_account.customer_id)
-    .bind(&req.external_reference)
+    .bind(&req.idempotency_key)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -392,12 +392,12 @@ async fn withdraw_money(
     }
 
     // Check idempotency key for withdrawal (scoped to the account's customer)
-    if let Some(ref external_ref) = req.external_reference {
+    if let Some(ref idempotency_key) = req.idempotency_key {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM transactions WHERE initiated_by = $1 AND external_reference = $2)"
         )
         .bind(customer_account.customer_id)
-        .bind(external_ref)
+        .bind(idempotency_key)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -421,7 +421,7 @@ async fn withdraw_money(
     .bind(amount)
     .bind(&req.description)
     .bind(customer_account.customer_id)
-    .bind(&req.external_reference)
+    .bind(&req.idempotency_key)
     .fetch_one(&mut *tx)
     .await?;
 
