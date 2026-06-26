@@ -103,7 +103,9 @@ BEGIN
 
     -- Update account balance
     UPDATE accounts
-    SET balance = new_balance, updated_at = CURRENT_TIMESTAMP
+    SET balance = new_balance, 
+        available_balance = new_balance + overdraft_limit - COALESCE((SELECT sum(amount) FROM account_holds WHERE account_id = NEW.account_id AND released_at IS NULL), 0),
+        updated_at = CURRENT_TIMESTAMP
     WHERE account_id = NEW.account_id;
 
     -- Update the balance_after in the entry
