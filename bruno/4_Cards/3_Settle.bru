@@ -8,10 +8,6 @@ post {
   url: {{baseUrl}}/api/v1/cards/settle
 }
 
-headers {
-  Content-Type: application/json
-}
-
 body:json {
   {}
 }
@@ -23,18 +19,4 @@ script:post-response {
   } else {
     console.log("Nothing to settle");
   }
-}
-
-docs {
-  Batch-settles all captured (but unsettled) card purchases.
-
-  What happens in the database:
-  - Reads the negative VISA_CLEARING GL account balance
-  - Posts a settlement transaction: VISA_CLEARING credit + BANK_SETTLEMENT debit
-  - Marks all captured card_purchase transactions as settled in their metadata
-
-  201 = settlement posted (settled_transactions > 0)
-  200 = nothing to settle (no captured transactions pending)
-
-  No request body needed — settles everything in one shot.
 }

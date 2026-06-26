@@ -8,10 +8,6 @@ post {
   url: {{baseUrl}}/api/v1/cards/authorize
 }
 
-headers {
-  Content-Type: application/json
-}
-
 body:json {
   {
     "account_id": "{{accountId}}",
@@ -28,18 +24,4 @@ script:post-response {
   } else {
     console.warn("Declined:", res.body.reason);
   }
-}
-
-docs {
-  Places a hold on the credit card account for the purchase amount.
-
-  Uses {{accountId}} set by the Open Account step.
-  On approval, saves auth_id into {{authId}} for the Capture step.
-
-  The hold reduces available_balance immediately.
-  Credit limit is $5,000 — amounts above that will be declined
-  with reason "insufficient_credit".
-
-  201 = approved (hold placed)
-  200 = declined (no hold)
 }

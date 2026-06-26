@@ -8,10 +8,6 @@ post {
   url: {{baseUrl}}/api/v1/customers
 }
 
-headers {
-  Content-Type: application/json
-}
-
 body:json {
   {
     "email": "jane.doe@example.com",
@@ -24,22 +20,11 @@ body:json {
   }
 }
 
-assert {
-  res.status: eq 201
-  res.body.kyc_status: eq pending
-}
-
 vars:post-response {
   customerId: res.body.customer_id
 }
 
-docs {
-  Creates a new customer and saves the customer_id into the collection variable
-  {{customerId}} so subsequent requests (Open Account) pick it up automatically.
-
-  Validation enforced by the database:
-  - email must be unique (409 on duplicate)
-  - date_of_birth must be at least 18 years ago (400 on underage)
-  - sin must be exactly 9 digits
-  - password minimum 8 characters
+assert {
+  res.status: eq 201
+  res.body.kyc_status: eq pending
 }

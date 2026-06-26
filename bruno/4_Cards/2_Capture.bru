@@ -8,10 +8,6 @@ post {
   url: {{baseUrl}}/api/v1/cards/capture
 }
 
-headers {
-  Content-Type: application/json
-}
-
 body:json {
   {
     "auth_id": "{{authId}}"
@@ -21,19 +17,4 @@ body:json {
 assert {
   res.status: eq 201
   res.body.status: eq completed
-}
-
-docs {
-  Converts the open hold into a real double-entry ledger transaction.
-
-  Uses {{authId}} set by the Authorize step — no manual copy/paste.
-
-  What happens in the database:
-  - Inserts a transaction header row
-  - Inserts two transaction_entries (card account credit + VISA_CLEARING debit)
-  - A DB trigger validates that debits == credits before committing
-  - Releases the hold from account_holds
-
-  The transaction is now in the ledger but not yet settled with the bank.
-  Run the Settle step to clear the VISA_CLEARING balance.
 }
