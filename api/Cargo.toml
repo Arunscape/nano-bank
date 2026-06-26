@@ -8,7 +8,7 @@ description = "Challenger bank core API backend"
 [dependencies]
 # Web Framework & HTTP
 axum = "0.7"
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "trace", "compression-br", "compression-gzip", "timeout"] }
 hyper = { version = "1.0", features = ["full"] }
 
