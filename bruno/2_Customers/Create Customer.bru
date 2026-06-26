@@ -1,0 +1,45 @@
+meta {
+  name: Create Customer
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/customers
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "email": "jane.doe@example.com",
+    "phone_number": "4161234567",
+    "first_name": "Jane",
+    "last_name": "Doe",
+    "date_of_birth": "1990-05-15",
+    "sin": "123456789",
+    "password": "securepass123"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.kyc_status: eq pending
+}
+
+vars:post-response {
+  customerId: res.body.customer_id
+}
+
+docs {
+  Creates a new customer and saves the customer_id into the collection variable
+  {{customerId}} so subsequent requests (Open Account) pick it up automatically.
+
+  Validation enforced by the database:
+  - email must be unique (409 on duplicate)
+  - date_of_birth must be at least 18 years ago (400 on underage)
+  - sin must be exactly 9 digits
+  - password minimum 8 characters
+}

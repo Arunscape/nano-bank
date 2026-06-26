@@ -1,0 +1,42 @@
+meta {
+  name: Open Account
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/accounts
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "customer_id": "{{customerId}}",
+    "account_type": "credit_card"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.currency: eq CAD
+  res.body.status: eq active
+}
+
+vars:post-response {
+  accountId: res.body.account_id
+}
+
+docs {
+  Opens a new account for the customer created in step 2.
+  Uses {{customerId}} automatically — no manual copy/paste needed.
+
+  account_type options:
+  - "credit_card"  → 19.99% APR, $5,000 credit limit
+  - "chequing"     → 3.00% interest, $0 limit
+  - "savings"      → 0.00% interest, $0 limit
+
+  Saves account_id into {{accountId}} for the card flow steps.
+}
