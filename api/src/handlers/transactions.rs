@@ -164,13 +164,17 @@ async fn transfer_money(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Account {} not found", second_id)))?;
 
-    let (from_account, _to_account) = if req.from_account_id == first_id {
+    let (from_account, to_account) = if req.from_account_id == first_id {
         (first_account, second_account)
     } else {
         (second_account, first_account)
     };
 
     if !matches!(from_account.status, AccountStatus::Active) {
+        return Err(AppError::InvalidAccountStatus);
+    }
+    
+    if !matches!(to_account.status, AccountStatus::Active) {
         return Err(AppError::InvalidAccountStatus);
     }
 
@@ -180,11 +184,12 @@ async fn transfer_money(
 
     let reference = reference_number("TXN");
     
-    // Check idempotency key if provided
+    // Check idempotency key if provided (scoped to the initiating customer)
     if let Some(ref idempotency_key) = req.idempotency_key {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM transactions WHERE external_reference = $1)"
+            "SELECT EXISTS(SELECT 1 FROM transactions WHERE initiated_by = $1 AND external_reference = $2)"
         )
+        .bind(from_account.customer_id)
         .bind(idempotency_key)
         .fetch_one(&mut *tx)
         .await?;
@@ -252,7 +257,7 @@ async fn deposit_money(
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
 
-    let system = ensure_system_accounts(&state.pool).await?;
+    let system = state.system_accounts;
 
     let mut tx = state.pool.begin().await?;
 
@@ -278,6 +283,21 @@ async fn deposit_money(
 
     if !matches!(customer_account.status, AccountStatus::Active) {
         return Err(AppError::InvalidAccountStatus);
+    }
+
+    // Check idempotency key for deposit (scoped to the account's customer)
+    if let Some(ref external_ref) = req.external_reference {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM transactions WHERE initiated_by = $1 AND external_reference = $2)"
+        )
+        .bind(customer_account.customer_id)
+        .bind(external_ref)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if exists {
+            return Err(AppError::DuplicateTransaction);
+        }
     }
 
     let reference = reference_number("DEP");
@@ -339,7 +359,7 @@ async fn withdraw_money(
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
 
-    let system = ensure_system_accounts(&state.pool).await?;
+    let system = state.system_accounts;
 
     let mut tx = state.pool.begin().await?;
 
@@ -369,6 +389,21 @@ async fn withdraw_money(
 
     if amount > customer_account.available_balance {
         return Err(AppError::InsufficientFunds);
+    }
+
+    // Check idempotency key for withdrawal (scoped to the account's customer)
+    if let Some(ref external_ref) = req.external_reference {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM transactions WHERE initiated_by = $1 AND external_reference = $2)"
+        )
+        .bind(customer_account.customer_id)
+        .bind(external_ref)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if exists {
+            return Err(AppError::DuplicateTransaction);
+        }
     }
 
     let reference = reference_number("WDL");
