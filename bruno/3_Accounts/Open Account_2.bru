@@ -1,0 +1,27 @@
+meta {
+  name: Open Account_2
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/accounts
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "customer_id": "{{customerId}}",
+    "account_type": "credit_card"
+  }
+}
+
+script:post-response {
+  bru.setVar("accountId", res.body.account_id);
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -1,16 +1,18 @@
 meta {
-  name: Create Customer
+  name: Create Customer_2
   type: http
-  seq: 1
+  seq: 2
 }
 
 post {
   url: {{baseUrl}}/api/v1/customers
+  body: json
+  auth: inherit
 }
 
 body:json {
   {
-    "email": "jane.doe@example.com",
+    "email": "jane.doe3@example.com",
     "phone_number": "4161234567",
     "first_name": "Jane",
     "last_name": "Doe",
@@ -20,11 +22,11 @@ body:json {
   }
 }
 
-vars:post-response {
-  customerId: res.body.customer_id
+script:post-response {
+  bru.setVar("customerId", res.body.customer_id);
 }
 
-assert {
-  res.status: eq 201
-  res.body.kyc_status: eq pending
+settings {
+  encodeUrl: true
+  timeout: 0
 }

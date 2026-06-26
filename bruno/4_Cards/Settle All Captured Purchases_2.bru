@@ -1,0 +1,16 @@
+meta {
+  name: Settle All Captured Purchases_2
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/v1/cards/settle
+  body: none
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

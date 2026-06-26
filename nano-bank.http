@@ -1,0 +1,97 @@
+# nano-bank API
+# Run requests top to bottom in order — each one uses the response from the previous.
+# Install extension first: code --install-extension humao.rest-client
+
+@baseUrl = http://localhost:8081
+
+# ─────────────────────────────────────────────────────────────
+# 1. Health check
+# ─────────────────────────────────────────────────────────────
+
+GET {{baseUrl}}/health
+Accept: application/json
+
+###
+
+# ─────────────────────────────────────────────────────────────
+# 2. Create customer
+#    Saves response so step 3 can read customer_id from it.
+# ─────────────────────────────────────────────────────────────
+
+# @name createCustomer
+POST {{baseUrl}}/api/v1/customers
+Content-Type: application/json
+
+{
+    "email": "jane.doe2@example.com",
+    "phone_number": "4161234567",
+    "first_name": "Jane",
+    "last_name": "Doe",
+    "date_of_birth": "1990-05-15",
+    "sin": "123456789",
+    "password": "securepass123"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────
+# 3. Open credit card account
+#    Uses customer_id from step 2.
+#    Saves response so step 4 can read account_id from it.
+# ─────────────────────────────────────────────────────────────
+
+# @name openAccount
+POST {{baseUrl}}/api/v1/accounts
+Content-Type: application/json
+
+{
+    "customer_id": "{{createCustomer.response.body.customer_id}}",
+    "account_type": "credit_card"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────
+# 4. Authorize purchase
+#    Uses account_id from step 3.
+#    Saves response so step 5 can read auth_id from it.
+# ─────────────────────────────────────────────────────────────
+
+# @name authorize
+POST {{baseUrl}}/api/v1/cards/authorize
+Content-Type: application/json
+
+{
+    "account_id": "{{openAccount.response.body.account_id}}",
+    "amount": 99.99,
+    "merchant": "Tim Hortons"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────
+# 5. Capture authorization
+#    Uses auth_id from step 4.
+#    Posts the double-entry journal entry to the ledger.
+# ─────────────────────────────────────────────────────────────
+
+POST {{baseUrl}}/api/v1/cards/capture
+Content-Type: application/json
+
+{
+    "auth_id": "{{authorize.response.body.auth_id}}"
+}
+
+###
+
+# ─────────────────────────────────────────────────────────────
+# 6. Settle all captured purchases
+#    Nets VISA_CLEARING against BANK_SETTLEMENT in one batch.
+# ─────────────────────────────────────────────────────────────
+
+POST {{baseUrl}}/api/v1/cards/settle
+Content-Type: application/json
+
+{}
+
+###
