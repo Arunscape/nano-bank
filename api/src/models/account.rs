@@ -122,7 +122,7 @@ pub struct AccountBalanceResponse {
 }
 
 // Active hold summary
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct ActiveHold {
     pub hold_id: Uuid,
     pub amount: Decimal,

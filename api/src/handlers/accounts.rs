@@ -1,10 +1,20 @@
-use axum::{extract::State, http::StatusCode, response::Json, routing::get, Router};
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::Json,
+    routing::get,
+    Router,
+};
 use rust_decimal::Decimal;
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::handlers::AppState;
-use crate::models::account::{Account, AccountResponse, AccountType, CreateAccountRequest};
+use crate::models::account::{
+    Account, AccountBalanceResponse, AccountResponse, AccountSummary, AccountType,
+    ActiveHold, CreateAccountRequest,
+};
 
 /// Opening terms for a new account, by type.
 ///
@@ -51,8 +61,40 @@ pub fn account_routes() -> Router<AppState> {
         .route("/:id/balance", get(get_balance))
 }
 
-async fn get_accounts() -> &'static str {
-    "Get accounts endpoint - TODO: implement"
+// TODO: replace customer_id query param with JWT principal once /auth/login is implemented
+#[derive(Deserialize)]
+struct AccountsQuery {
+    customer_id: Uuid,
+}
+
+async fn get_accounts(
+    State(state): State<AppState>,
+    Query(params): Query<AccountsQuery>,
+) -> Result<Json<Vec<AccountSummary>>, AppError> {
+    let accounts = sqlx::query_as::<_, Account>(
+        "SELECT account_id, customer_id, account_number, account_type, currency,
+                balance, available_balance, status, interest_rate, overdraft_limit,
+                minimum_balance, created_at, updated_at, activated_at, closed_at
+         FROM accounts WHERE customer_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(params.customer_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    let summaries = accounts
+        .into_iter()
+        .map(|a| AccountSummary {
+            account_id: a.account_id,
+            account_number: a.account_number,
+            account_type: a.account_type,
+            balance: a.balance,
+            currency: a.currency,
+            status: a.status,
+        })
+        .collect();
+
+    Ok(Json(summaries))
 }
 
 /// Open a new account for a customer.
@@ -136,10 +178,63 @@ async fn create_account(
     })))
 }
 
-async fn get_account() -> &'static str {
-    "Get account endpoint - TODO: implement"
+async fn get_account(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<AccountResponse>, AppError> {
+    let account = sqlx::query_as::<_, Account>(
+        "SELECT account_id, customer_id, account_number, account_type, currency,
+                balance, available_balance, status, interest_rate, overdraft_limit,
+                minimum_balance, created_at, updated_at, activated_at, closed_at
+         FROM accounts WHERE account_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => AppError::NotFound("Account not found".to_string()),
+        e => AppError::Database(e),
+    })?;
+
+    Ok(Json(account.into()))
 }
 
-async fn get_balance() -> &'static str {
-    "Get balance endpoint - TODO: implement"
+async fn get_balance(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<AccountBalanceResponse>, AppError> {
+    let account = sqlx::query_as::<_, Account>(
+        "SELECT account_id, customer_id, account_number, account_type, currency,
+                balance, available_balance, status, interest_rate, overdraft_limit,
+                minimum_balance, created_at, updated_at, activated_at, closed_at
+         FROM accounts WHERE account_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => AppError::NotFound("Account not found".to_string()),
+        e => AppError::Database(e),
+    })?;
+
+    let holds = sqlx::query_as::<_, ActiveHold>(
+        "SELECT hold_id, amount, reason, expires_at
+         FROM account_holds
+         WHERE account_id = $1 AND released_at IS NULL
+         ORDER BY created_at DESC",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    Ok(Json(AccountBalanceResponse {
+        account_id: account.account_id,
+        account_number: account.account_number,
+        balance: account.balance,
+        available_balance: account.available_balance,
+        currency: account.currency,
+        status: account.status,
+        holds,
+    }))
 }

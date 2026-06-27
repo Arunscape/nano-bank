@@ -1,10 +1,12 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::Json,
     routing::{get, post},
     Router,
 };
+use serde::Deserialize;
+use uuid::Uuid;
 use validator::Validate;
 
 use crate::errors::AppError;
@@ -75,8 +77,30 @@ async fn create_customer(
     Ok((StatusCode::CREATED, Json(customer.into())))
 }
 
-async fn get_profile() -> &'static str {
-    "Get profile endpoint - TODO: implement"
+// TODO: replace customer_id query param with JWT principal once /auth/login is implemented
+#[derive(Deserialize)]
+struct ProfileQuery {
+    customer_id: Uuid,
+}
+
+async fn get_profile(
+    State(state): State<AppState>,
+    Query(params): Query<ProfileQuery>,
+) -> Result<Json<CustomerResponse>, AppError> {
+    let customer = sqlx::query_as::<_, Customer>(
+        "SELECT customer_id, email, phone_number, first_name, last_name,
+                date_of_birth, sin, kyc_status, kyc_completed_at, created_at, updated_at
+         FROM customers WHERE customer_id = $1",
+    )
+    .bind(params.customer_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => AppError::NotFound("Customer not found".to_string()),
+        e => AppError::Database(e),
+    })?;
+
+    Ok(Json(customer.into()))
 }
 
 async fn update_profile() -> &'static str {
