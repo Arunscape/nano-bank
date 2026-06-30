@@ -45,13 +45,14 @@ impl Ledger for LegacyLedger {
                 })
             })
             .collect();
+        // Respect the legacy field limits: bktxt is VARCHAR(25), xblnr VARCHAR(16).
         let body = json!({
             "bukrs": COMPANY_CODE,
             "blart": "SA",
             "budat": Utc::now().date_naive().to_string(),
             "waers": "CAD",
-            "bktxt": entry.description,
-            "xblnr": entry.reference,
+            "bktxt": truncate(entry.description.as_deref(), 25),
+            "xblnr": truncate(entry.reference.as_deref(), 16),
             "items": items,
         });
 
@@ -99,6 +100,11 @@ struct LegacyPostResponse {
 struct LegacyBalance {
     hkont: String,
     balance: rust_decimal::Decimal,
+}
+
+/// Truncate to the legacy column width (character count, matching VARCHAR(n)).
+fn truncate(s: Option<&str>, max: usize) -> Option<String> {
+    s.map(|x| x.chars().take(max).collect())
 }
 
 fn transport(e: reqwest::Error) -> LedgerError {

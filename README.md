@@ -54,9 +54,21 @@ curl -X POST localhost:8081/api/v1/ledger/journal -H 'content-type: application/
 curl localhost:8081/api/v1/ledger/balances
 ```
 
-The same request posts to whichever core is configured. The card rails
-(`cards.rs`) still post directly to the local DB — routing those through the port
-(and retiring the local posting) is the next step.
+The same request posts to whichever core is configured.
+
+### Cards post their GL to the core
+
+The card rails (`cards.rs`) route their **aggregate general-ledger** effect
+through the same port: `capture` posts *debit Receivable / credit Payable* and
+`settle` posts *debit Payable / credit Bank* to the configured core, with the
+core's document id recorded in `transactions.metadata.gl_entry`. The **per-card
+subledger** (balance, holds, available credit) stays local — the core is the GL
+of record, while nano-bank keeps the subledger that enforces credit limits. The
+GL post happens inside the capture/settle transaction, so if the core can't
+record it the operation fails rather than letting the ledger drift.
+
+`transactions.rs` (deposit/transfer/withdrawal) is still stubbed and not yet
+routed through the port.
 
 | Component | Tech |
 |-----------|------|

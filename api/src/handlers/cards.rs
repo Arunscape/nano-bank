@@ -35,6 +35,8 @@ use crate::config::database::DatabasePool;
 use crate::errors::AppError;
 use crate::handlers::AppState;
 use crate::models::account::{Account, AccountStatus, AccountType};
+// The ledger port's account role (aliased to avoid clashing with the model's Account).
+use crate::ledger::{Account as GlAccount, Direction, EntryLine, NewEntry, PostedEntry};
 
 const SYSTEM_CUSTOMER_EMAIL: &str = "system@nano.bank";
 /// GL accounts are distinguished by account_type under the system customer.
@@ -136,6 +138,32 @@ fn normalize_amount(amount: Decimal) -> Result<Decimal, AppError> {
         return Err(AppError::BadRequest("amount must be positive".to_string()));
     }
     Ok(amount)
+}
+
+/// Post a balanced two-line entry to the general ledger of record (the swappable
+/// core) via the Ledger port. The per-card subledger is kept locally; this is the
+/// aggregate GL effect. A core failure is surfaced so the caller can fail the
+/// operation rather than let the GL drift.
+async fn post_gl_entry(
+    state: &AppState,
+    reference: &str,
+    description: &str,
+    debit: GlAccount,
+    credit: GlAccount,
+    amount: Decimal,
+) -> Result<PostedEntry, AppError> {
+    state
+        .ledger
+        .post_entry(NewEntry {
+            reference: Some(reference.to_string()),
+            description: Some(description.to_string()),
+            lines: vec![
+                EntryLine { account: debit, direction: Direction::Debit, amount },
+                EntryLine { account: credit, direction: Direction::Credit, amount },
+            ],
+        })
+        .await
+        .map_err(|e| AppError::ServiceUnavailable(format!("GL core post failed: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -323,11 +351,33 @@ async fn capture(
         .await?;
     let available = recompute_card_available(&mut tx, card.account_id).await?;
 
+    // The core is the general ledger of record: post the aggregate GL effect of
+    // the purchase (cardholder receivable up, network clearing payable up). The
+    // per-card subledger above stays local. Done before commit so a core failure
+    // fails the capture rather than letting the GL drift.
+    let gl = post_gl_entry(
+        &state,
+        &reference,
+        &format!("Card purchase — {}", merchant),
+        GlAccount::Receivable,
+        GlAccount::Payable,
+        amount,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE transactions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), \
+         '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1",
+    )
+    .bind(txn_id)
+    .bind(format!("{}:{}", gl.backend, gl.id))
+    .execute(&mut *tx)
+    .await?;
+
     tx.commit().await?;
 
     tracing::info!(
         account_id = %card.account_id, transaction_id = %txn_id, amount = %amount,
-        merchant = %merchant, "💳 capture posted"
+        merchant = %merchant, gl_entry = %gl.id, "💳 capture posted"
     );
 
     Ok((
@@ -436,11 +486,31 @@ async fn settle(
     .fetch_one(&mut *tx)
     .await?;
 
+    // Mirror the settlement to the general ledger of record: pay down the network
+    // payable from the bank account.
+    let gl = post_gl_entry(
+        &state,
+        &reference,
+        "Visa settlement batch",
+        GlAccount::Payable,
+        GlAccount::Bank,
+        net,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE transactions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), \
+         '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1",
+    )
+    .bind(txn_id)
+    .bind(format!("{}:{}", gl.backend, gl.id))
+    .execute(&mut *tx)
+    .await?;
+
     tx.commit().await?;
 
     tracing::info!(
         transaction_id = %txn_id, net_amount = %net, settled_transactions,
-        "🏦 settlement batch posted"
+        gl_entry = %gl.id, "🏦 settlement batch posted"
     );
 
     Ok((
