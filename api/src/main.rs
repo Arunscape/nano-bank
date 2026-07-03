@@ -89,7 +89,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("📖 API Documentation: http://{}/docs", settings.server_address());
     info!("💚 Health Check: http://{}/health", settings.server_address());
 
-    axum::serve(listener, app).await?;
+    // `into_make_service_with_connect_info` exposes the peer address to handlers
+    // via `ConnectInfo<SocketAddr>` — needed to record client IPs on login
+    // sessions and failed-login attempts.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

@@ -153,7 +153,6 @@ pub struct UploadKycDocumentRequest {
 
     #[validate(length(min = 1, max = 255))]
     pub file_name: String,
-
     // File content would be handled separately (multipart upload)
 }
 

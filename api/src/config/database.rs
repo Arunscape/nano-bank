@@ -54,6 +54,24 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
         }
     }
 
+    // Self-heal the auth credentials table. The canonical DDL lives in
+    // src/core/tables/02_customers.sql for fresh deploys, but issuing it here
+    // (idempotently) means a DB initialised before auth existed picks up the
+    // table on the next `cargo run` without a redeploy — same pattern as
+    // handlers::cards::ensure_system_accounts.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS customer_credentials (
+            customer_id UUID PRIMARY KEY REFERENCES customers(customer_id) ON DELETE CASCADE,
+            password_hash VARCHAR(255) NOT NULL,
+            password_changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 

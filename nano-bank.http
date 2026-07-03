@@ -14,8 +14,8 @@ Accept: application/json
 ###
 
 # ─────────────────────────────────────────────────────────────
-# 2. Create customer
-#    Saves response so step 3 can read customer_id from it.
+# 2. Register customer
+#    The `password` is now hashed + stored, so step 3 can log in.
 # ─────────────────────────────────────────────────────────────
 
 # @name createCustomer
@@ -35,31 +35,68 @@ Content-Type: application/json
 ###
 
 # ─────────────────────────────────────────────────────────────
-# 3. Open credit card account
-#    Uses customer_id from step 2.
-#    Saves response so step 4 can read account_id from it.
+# 3. Login
+#    Returns a short-lived access token + a refresh token (used in step 12).
+# ─────────────────────────────────────────────────────────────
+
+# @name login
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{
+    "email": "jane.doe2@example.com",
+    "password": "securepass123"
+}
+
+###
+
+@accessToken = {{login.response.body.access_token}}
+@refreshToken = {{login.response.body.refresh_token}}
+
+# ─────────────────────────────────────────────────────────────
+# 3b. Get network service token (card rails / network plane)
+#     The /cards/* endpoints authenticate the card NETWORK, not a
+#     cardholder — so they use a service token, not the customer token.
+# ─────────────────────────────────────────────────────────────
+
+# @name serviceToken
+POST {{baseUrl}}/api/v1/auth/service-token
+Content-Type: application/json
+
+{
+    "client_secret": "nano-bank-visa-network-secret-change-me"
+}
+
+###
+
+@serviceToken = {{serviceToken.response.body.access_token}}
+
+# ─────────────────────────────────────────────────────────────
+# 4. Open credit card account
+#    customer comes from the token — no customer_id in the body.
+#    Saves response so step 5 can read account_id from it.
 # ─────────────────────────────────────────────────────────────
 
 # @name openAccount
 POST {{baseUrl}}/api/v1/accounts
 Content-Type: application/json
+Authorization: Bearer {{accessToken}}
 
 {
-    "customer_id": "{{createCustomer.response.body.customer_id}}",
     "account_type": "credit_card"
 }
 
 ###
 
 # ─────────────────────────────────────────────────────────────
-# 4. Authorize purchase
-#    Uses account_id from step 3.
-#    Saves response so step 5 can read auth_id from it.
+# 5. Authorize purchase
+#    Uses account_id from step 4. Saves response for step 6.
 # ─────────────────────────────────────────────────────────────
 
 # @name authorize
 POST {{baseUrl}}/api/v1/cards/authorize
 Content-Type: application/json
+Authorization: Bearer {{serviceToken}}
 
 {
     "account_id": "{{openAccount.response.body.account_id}}",
@@ -70,13 +107,13 @@ Content-Type: application/json
 ###
 
 # ─────────────────────────────────────────────────────────────
-# 5. Capture authorization
-#    Uses auth_id from step 4.
-#    Posts the double-entry journal entry to the ledger.
+# 6. Capture authorization
+#    Uses auth_id from step 5. Posts the double-entry journal entry.
 # ─────────────────────────────────────────────────────────────
 
 POST {{baseUrl}}/api/v1/cards/capture
 Content-Type: application/json
+Authorization: Bearer {{serviceToken}}
 
 {
     "auth_id": "{{authorize.response.body.auth_id}}"
@@ -85,54 +122,89 @@ Content-Type: application/json
 ###
 
 # ─────────────────────────────────────────────────────────────
-# 6. Settle all captured purchases
+# 7. Settle all captured purchases
 #    Nets VISA_CLEARING against BANK_SETTLEMENT in one batch.
 # ─────────────────────────────────────────────────────────────
 
 POST {{baseUrl}}/api/v1/cards/settle
 Content-Type: application/json
+Authorization: Bearer {{serviceToken}}
 
 {}
 
 ###
 
 # ─────────────────────────────────────────────────────────────
-# 7. List accounts for customer
-#    Uses customer_id from step 2. Returns Vec<AccountSummary>.
+# 8. List accounts for the authenticated customer
+#    Returns Vec<AccountSummary> — scoped to the token, no query param.
 # ─────────────────────────────────────────────────────────────
 
-GET {{baseUrl}}/api/v1/accounts?customer_id={{createCustomer.response.body.customer_id}}
+GET {{baseUrl}}/api/v1/accounts
 Accept: application/json
+Authorization: Bearer {{accessToken}}
 
 ###
 
 # ─────────────────────────────────────────────────────────────
-# 8. Get single account (full details)
-#    Uses account_id from step 3. Returns AccountResponse.
+# 9. Get single account (full details)
+#    Uses account_id from step 4. Returns AccountResponse.
 # ─────────────────────────────────────────────────────────────
 
 GET {{baseUrl}}/api/v1/accounts/{{openAccount.response.body.account_id}}
 Accept: application/json
+Authorization: Bearer {{accessToken}}
 
 ###
 
 # ─────────────────────────────────────────────────────────────
-# 9. Get balance with active holds
-#    Uses account_id from step 3. Returns balance + holds[].
-#    Run after step 4 (authorize) to see an open hold in holds[].
+# 10. Get balance with active holds
+#     Uses account_id from step 4. Returns balance + holds[].
+#     Run after step 5 (authorize) to see an open hold in holds[].
 # ─────────────────────────────────────────────────────────────
 
 GET {{baseUrl}}/api/v1/accounts/{{openAccount.response.body.account_id}}/balance
 Accept: application/json
+Authorization: Bearer {{accessToken}}
 
 ###
 
 # ─────────────────────────────────────────────────────────────
-# 10. Get customer profile
-#     Uses customer_id from step 2. Returns CustomerResponse.
+# 11. Get customer profile
+#     Customer comes from the token. Returns CustomerResponse.
 # ─────────────────────────────────────────────────────────────
 
-GET {{baseUrl}}/api/v1/customers/profile?customer_id={{createCustomer.response.body.customer_id}}
+GET {{baseUrl}}/api/v1/customers/profile
 Accept: application/json
+Authorization: Bearer {{accessToken}}
+
+###
+
+# ─────────────────────────────────────────────────────────────
+# 12. Refresh — exchange the refresh token for a new access token
+#     The refresh token is single-use: this rotates it, so re-running
+#     with the OLD refresh token returns 401. Use the new pair after.
+# ─────────────────────────────────────────────────────────────
+
+# @name refresh
+POST {{baseUrl}}/api/v1/auth/refresh
+Content-Type: application/json
+
+{
+    "refresh_token": "{{refreshToken}}"
+}
+
+###
+
+@accessToken = {{refresh.response.body.access_token}}
+@refreshToken = {{refresh.response.body.refresh_token}}
+
+# ─────────────────────────────────────────────────────────────
+# 13. Logout — terminate the session (revokes the refresh token)
+#     Returns 204. Afterwards, step 12 with this session's refresh
+#     token returns 401. The access token still works until it expires.
+# ─────────────────────────────────────────────────────────────
+
+POST {{baseUrl}}/api/v1/auth/logout
+Authorization: Bearer {{accessToken}}
 
 ###

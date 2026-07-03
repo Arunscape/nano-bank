@@ -46,12 +46,11 @@ pub struct Account {
 
 // Account creation request
 //
-// `customer_id` is carried in the body because there is no auth layer yet to
-// derive the caller's identity from a session/JWT. Once `/auth` lands this
-// should come from the authenticated principal instead.
+// The owning customer is taken from the authenticated principal (the JWT
+// `AuthenticatedCustomer` extractor), not the request body, so a caller can
+// only open accounts for themselves.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateAccountRequest {
-    pub customer_id: Uuid,
     pub account_type: AccountType,
     pub initial_deposit: Option<Decimal>,
 }

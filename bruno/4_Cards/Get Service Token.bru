@@ -1,0 +1,26 @@
+meta {
+  name: Get Service Token
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/service-token
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "client_secret": "nano-bank-visa-network-secret-change-me"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("serviceToken", res.body.access_token);
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

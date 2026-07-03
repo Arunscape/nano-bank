@@ -1,17 +1,17 @@
 meta {
-  name: Settle All Captured Purchases
+  name: Logout
   type: http
   seq: 6
 }
 
 post {
-  url: {{baseUrl}}/api/v1/cards/settle
+  url: {{baseUrl}}/api/v1/auth/logout
   body: none
   auth: bearer
 }
 
 auth:bearer {
-  token: {{serviceToken}}
+  token: {{accessToken}}
 }
 
 settings {

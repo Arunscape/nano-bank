@@ -34,6 +34,7 @@ use uuid::Uuid;
 use crate::config::database::DatabasePool;
 use crate::errors::AppError;
 use crate::handlers::AppState;
+use crate::middleware::auth::AuthenticatedService;
 use crate::models::account::{Account, AccountStatus, AccountType};
 // The ledger port's account role (aliased to avoid clashing with the model's Account).
 use crate::ledger::{Account as GlAccount, Direction, EntryLine, NewEntry, PostedEntry};
@@ -85,7 +86,10 @@ pub async fn ensure_system_accounts(pool: &DatabasePool) -> Result<SystemAccount
     let bank_settlement_id = ensure_gl_account(pool, system_customer_id, SETTLEMENT_TYPE).await?;
 
     tracing::info!(%visa_clearing_id, %bank_settlement_id, "✅ system GL accounts ready");
-    Ok(SystemAccounts { visa_clearing_id, bank_settlement_id })
+    Ok(SystemAccounts {
+        visa_clearing_id,
+        bank_settlement_id,
+    })
 }
 
 /// Ensure exactly one GL account of `account_type` exists for the system
@@ -192,23 +196,39 @@ struct AuthorizeResponse {
 /// available credit. Returns 201 approved (with an `auth_id`) or 200 declined.
 async fn authorize(
     State(state): State<AppState>,
+    _network: AuthenticatedService,
     Json(req): Json<AuthorizeRequest>,
 ) -> Result<(StatusCode, Json<AuthorizeResponse>), AppError> {
     let amount = normalize_amount(req.amount)?;
-    let merchant = req.merchant.unwrap_or_else(|| "Unknown Merchant".to_string());
+    let merchant = req
+        .merchant
+        .unwrap_or_else(|| "Unknown Merchant".to_string());
 
     let mut tx = state.pool.begin().await?;
 
+    // The network identifies the card; the issuer validates it. There is no
+    // per-cardholder ownership check here — the network legitimately authorizes
+    // against any card. `card.customer_id` is still resolved for the audit trail
+    // and as fraud-scoring context below.
     let card = fetch_account_for_update(&mut tx, req.account_id)
         .await?
         .ok_or_else(|| AppError::NotFound("account not found".to_string()))?;
 
     if !matches!(card.account_type, AccountType::CreditCard) {
-        return Err(AppError::BadRequest("account is not a credit card".to_string()));
+        return Err(AppError::BadRequest(
+            "account is not a credit card".to_string(),
+        ));
     }
     if !matches!(card.status, AccountStatus::Active) {
         return Err(AppError::InvalidAccountStatus);
     }
+
+    // TODO(fraud): risk_assess(&card, amount, &merchant, recent velocity, device/geo)
+    //   -> Approve | Decline { reason }. The issuer's fraud engine scores the
+    //   authorization here, between card validation and the approve/decline
+    //   branch, and may decline (write suspicious_activities / rule_violations).
+    //   AuthorizeResponse.reason already carries a decline reason, so a future
+    //   fraud decline needs no shape change.
 
     // available_balance already nets out balance and active holds.
     if amount > card.available_balance {
@@ -286,6 +306,7 @@ struct CaptureResponse {
 /// and release the hold.
 async fn capture(
     State(state): State<AppState>,
+    _network: AuthenticatedService,
     Json(req): Json<CaptureRequest>,
 ) -> Result<(StatusCode, Json<CaptureResponse>), AppError> {
     let mut tx = state.pool.begin().await?;
@@ -305,11 +326,16 @@ async fn capture(
     .ok_or_else(|| AppError::NotFound("authorization not found or already captured".to_string()))?;
 
     let (card_id, amount, reason) = hold;
-    let merchant = reason.strip_prefix("visa_auth:").unwrap_or(&reason).to_string();
+    let merchant = reason
+        .strip_prefix("visa_auth:")
+        .unwrap_or(&reason)
+        .to_string();
 
     let system = ensure_system_accounts(&state.pool).await?;
 
-    // Lock both legs (card first, then clearing).
+    // Lock both legs (card first, then clearing). `card.customer_id` is used for
+    // the transaction's `initiated_by` (audit) below — no ownership gate, since
+    // the network drives the capture.
     let card = fetch_account_for_update(&mut tx, card_id)
         .await?
         .ok_or_else(|| AppError::NotFound("card account not found".to_string()))?;
@@ -338,9 +364,12 @@ async fn capture(
     // entries' balance_before/after, so we pass 0 placeholders for those.
     // Card is *credited* (debt up); VISA_CLEARING is *debited*.
     post_two_legged(
-        &mut tx, txn_id,
-        card.account_id, "credit",
-        system.visa_clearing_id, "debit",
+        &mut tx,
+        txn_id,
+        card.account_id,
+        "credit",
+        system.visa_clearing_id,
+        "debit",
         amount,
     )
     .await?;
@@ -410,6 +439,10 @@ struct SettleResponse {
 /// `BANK_SETTLEMENT` in one transaction and mark covered captures as settled.
 async fn settle(
     State(state): State<AppState>,
+    // Settlement runs on the network/service plane for now. In reality clearing
+    // & settlement is the bank's own operations function — this should move to a
+    // separate ops/admin credential in a later pass.
+    _network: AuthenticatedService,
 ) -> Result<(StatusCode, Json<SettleResponse>), AppError> {
     let system = ensure_system_accounts(&state.pool).await?;
 
@@ -463,9 +496,12 @@ async fn settle(
 
     // Clearing *credited* back toward zero; BANK_SETTLEMENT *debited* (paid out).
     post_two_legged(
-        &mut tx, txn_id,
-        system.visa_clearing_id, "credit",
-        system.bank_settlement_id, "debit",
+        &mut tx,
+        txn_id,
+        system.visa_clearing_id,
+        "credit",
+        system.bank_settlement_id,
+        "debit",
         net,
     )
     .await?;
@@ -535,7 +571,10 @@ const ACCOUNT_COLUMNS: &str = "account_id, customer_id, account_number, account_
     balance, available_balance, status, interest_rate, overdraft_limit, minimum_balance, \
     created_at, updated_at, activated_at, closed_at";
 
-async fn fetch_account_for_update(tx: &mut Tx<'_>, account_id: Uuid) -> Result<Option<Account>, sqlx::Error> {
+async fn fetch_account_for_update(
+    tx: &mut Tx<'_>,
+    account_id: Uuid,
+) -> Result<Option<Account>, sqlx::Error> {
     sqlx::query_as::<_, Account>(&format!(
         "SELECT {ACCOUNT_COLUMNS} FROM accounts WHERE account_id = $1 FOR UPDATE"
     ))
@@ -577,7 +616,10 @@ async fn post_two_legged(
 }
 
 /// Recompute a credit card's available credit: limit − balance − open holds.
-async fn recompute_card_available(tx: &mut Tx<'_>, account_id: Uuid) -> Result<Decimal, sqlx::Error> {
+async fn recompute_card_available(
+    tx: &mut Tx<'_>,
+    account_id: Uuid,
+) -> Result<Decimal, sqlx::Error> {
     sqlx::query_scalar(
         r#"
         UPDATE accounts

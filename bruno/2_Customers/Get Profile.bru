@@ -1,16 +1,12 @@
 meta {
   name: Get Profile
   type: http
-  seq: 3
+  seq: 4
 }
 
 get {
-  url: {{baseUrl}}/api/v1/customers/profile?customer_id={{customerId}}
+  url: {{baseUrl}}/api/v1/customers/profile
   auth: inherit
-}
-
-params:query {
-  customer_id: {{customerId}}
 }
 
 settings {

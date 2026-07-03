@@ -20,6 +20,15 @@ CREATE TABLE customers (
     CONSTRAINT chk_sin_format CHECK (sin ~ '^[0-9]{9}$' OR sin IS NULL)
 );
 
+-- Login credentials, kept separate from customer PII (least privilege: profile
+-- queries never touch the hash). One row per customer, written at registration.
+CREATE TABLE customer_credentials (
+    customer_id UUID PRIMARY KEY REFERENCES customers(customer_id) ON DELETE CASCADE,
+    password_hash VARCHAR(255) NOT NULL, -- argon2id PHC string
+    password_changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
 -- Customer addresses
 CREATE TABLE customer_addresses (
     address_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

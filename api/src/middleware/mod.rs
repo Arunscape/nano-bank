@@ -1,2 +1,2 @@
 // Authentication and security middleware
-// TODO: Implement middleware modules
+pub mod auth;

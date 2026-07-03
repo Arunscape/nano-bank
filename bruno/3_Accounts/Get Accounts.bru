@@ -5,12 +5,8 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/api/v1/accounts?customer_id={{customerId}}
+  url: {{baseUrl}}/api/v1/accounts
   auth: inherit
-}
-
-params:query {
-  customer_id: {{customerId}}
 }
 
 settings {

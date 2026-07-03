@@ -51,10 +51,10 @@ pub struct CustomerInfo {
 // Token Claims
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TokenClaims {
-    pub sub: Uuid,           // Customer ID
+    pub sub: Uuid, // Customer ID
     pub email: String,
-    pub exp: i64,            // Expiration time
-    pub iat: i64,            // Issued at
+    pub exp: i64, // Expiration time
+    pub iat: i64, // Issued at
     pub session_id: Uuid,
     pub device_fingerprint: Option<String>,
 }

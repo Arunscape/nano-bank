@@ -18,6 +18,9 @@ DB_PORT="${DB_PORT:-5432}"
 VIEWER_PORT="${VIEWER_PORT:-8504}"
 VISA_INTERVAL_SECONDS="${VISA_INTERVAL_SECONDS:-2}"
 SETTLE_INTERVAL_SECONDS="${SETTLE_INTERVAL_SECONDS:-30}"
+# Secret the visa simulator presents to mint a network service token. Must match
+# the API's security.service_client_secret (config/default.toml).
+SERVICE_CLIENT_SECRET="${SERVICE_CLIENT_SECRET:-nano-bank-visa-network-secret-change-me}"
 
 echo "🔨 Building images …"
 podman build -t localhost/nano-bank-viewer:latest    viewer
@@ -45,6 +48,7 @@ echo "💳 Starting Visa rails simulator (purchase every ${VISA_INTERVAL_SECONDS
 podman run -d --name nano-bank-visa \
   --network=host --restart unless-stopped \
   -e API_BASE_URL="$API_BASE_URL" \
+  -e SERVICE_CLIENT_SECRET="$SERVICE_CLIENT_SECRET" \
   -e DB_HOST="$DB_HOST" -e DB_PORT="$DB_PORT" \
   -e INTERVAL_SECONDS="$VISA_INTERVAL_SECONDS" \
   -e SETTLE_INTERVAL_SECONDS="$SETTLE_INTERVAL_SECONDS" \

@@ -1,16 +1,15 @@
 use axum::{
-    extract::{Query, State},
+    extract::State,
     http::StatusCode,
     response::Json,
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
-use uuid::Uuid;
 use validator::Validate;
 
 use crate::errors::AppError;
 use crate::handlers::AppState;
+use crate::middleware::auth::AuthenticatedCustomer;
 use crate::models::customer::{CreateCustomerRequest, Customer, CustomerResponse};
 
 pub fn customer_routes() -> Router<AppState> {
@@ -25,14 +24,22 @@ pub fn customer_routes() -> Router<AppState> {
 /// Inserts a row into the `customers` table and returns the created record
 /// (minus sensitive fields). The customer starts with `kyc_status = 'pending'`.
 ///
-/// NOTE: the request carries a `password`, but there is no credentials/auth
-/// table in the schema yet, so it is validated and then discarded. Persisting a
-/// password hash (argon2) is a TODO for when `/auth/login` is implemented.
+/// The request's `password` is argon2-hashed and stored in `customer_credentials`
+/// in the same transaction as the customer row, so a customer always has a way to
+/// authenticate via `POST /api/v1/auth/login`. The plaintext is never persisted.
 async fn create_customer(
     State(state): State<AppState>,
     Json(payload): Json<CreateCustomerRequest>,
 ) -> Result<(StatusCode, Json<CustomerResponse>), AppError> {
     payload.validate()?;
+
+    // Hash before opening the transaction so a hashing failure can't leave one
+    // dangling. The plaintext password is never persisted or logged.
+    let password_hash = crate::utils::password::hash_password(&payload.password)?;
+
+    // The customer row and its credential row are inserted atomically: a
+    // customer must never exist without a way to authenticate.
+    let mut tx = state.pool.begin().await?;
 
     let customer = sqlx::query_as::<_, Customer>(
         r#"
@@ -50,7 +57,7 @@ async fn create_customer(
     .bind(&payload.last_name)
     .bind(payload.date_of_birth)
     .bind(payload.sin.as_deref())
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| match &e {
         // Map Postgres constraint violations to client errors instead of 500s.
@@ -68,6 +75,14 @@ async fn create_customer(
         _ => AppError::Database(e),
     })?;
 
+    sqlx::query("INSERT INTO customer_credentials (customer_id, password_hash) VALUES ($1, $2)")
+        .bind(customer.customer_id)
+        .bind(&password_hash)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
     tracing::info!(
         customer_id = %customer.customer_id,
         email = %customer.email,
@@ -77,22 +92,16 @@ async fn create_customer(
     Ok((StatusCode::CREATED, Json(customer.into())))
 }
 
-// TODO: replace customer_id query param with JWT principal once /auth/login is implemented
-#[derive(Deserialize)]
-struct ProfileQuery {
-    customer_id: Uuid,
-}
-
 async fn get_profile(
     State(state): State<AppState>,
-    Query(params): Query<ProfileQuery>,
+    auth: AuthenticatedCustomer,
 ) -> Result<Json<CustomerResponse>, AppError> {
     let customer = sqlx::query_as::<_, Customer>(
         "SELECT customer_id, email, phone_number, first_name, last_name,
                 date_of_birth, sin, kyc_status, kyc_completed_at, created_at, updated_at
          FROM customers WHERE customer_id = $1",
     )
-    .bind(params.customer_id)
+    .bind(auth.customer_id)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| match e {

@@ -9,8 +9,14 @@ Postgres, the way the network would already hold card references), authorizes a
 random purchase at a Faker merchant, and usually captures it. Every
 SETTLE_INTERVAL_SECONDS it triggers a settlement batch on the issuer.
 
+The card rails are the issuer's *network plane*: they authenticate the card
+network/processor (this simulator) with a service token, not a cardholder. We
+mint one via the client-credentials endpoint (`POST /api/v1/auth/service-token`)
+using a shared secret, cache it, and re-mint on expiry or a 401.
+
 Config via env vars:
   API_BASE_URL            issuer API base        (default http://localhost:8081)
+  SERVICE_CLIENT_SECRET   secret to mint a service token (default matches dev config)
   INTERVAL_SECONDS        delay between purchases (default 2.0)
   SETTLE_INTERVAL_SECONDS settlement batch cadence (default 30)
   CAPTURE_PROB            chance an approved auth is captured (default 0.9)
@@ -31,6 +37,9 @@ import requests
 from faker import Faker
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8081").rstrip("/")
+SERVICE_CLIENT_SECRET = os.getenv(
+    "SERVICE_CLIENT_SECRET", "nano-bank-visa-network-secret-change-me"
+)
 INTERVAL_SECONDS = float(os.getenv("INTERVAL_SECONDS", "2.0"))
 SETTLE_INTERVAL_SECONDS = float(os.getenv("SETTLE_INTERVAL_SECONDS", "30"))
 CAPTURE_PROB = float(os.getenv("CAPTURE_PROB", "0.9"))
@@ -49,13 +58,71 @@ DB = dict(
 AUTHORIZE_URL = f"{API_BASE_URL}/api/v1/cards/authorize"
 CAPTURE_URL = f"{API_BASE_URL}/api/v1/cards/capture"
 SETTLE_URL = f"{API_BASE_URL}/api/v1/cards/settle"
+SERVICE_TOKEN_URL = f"{API_BASE_URL}/api/v1/auth/service-token"
 HEALTH_URL = f"{API_BASE_URL}/health"
 
 fake = Faker("en_CA")
 
+# Cached service token: (token, monotonic expiry deadline). Re-minted lazily.
+_service_token: str | None = None
+_token_expiry: float = 0.0
+
 
 def log(msg: str) -> None:
     print(f"{time.strftime('%H:%M:%S')}  {msg}", flush=True)
+
+
+def get_service_token(session: requests.Session, force: bool = False) -> str | None:
+    """Return a valid network-plane service token, minting/refreshing as needed.
+
+    Uses the client-credentials endpoint with SERVICE_CLIENT_SECRET. Tokens are
+    cached until ~30s before expiry; `force=True` re-mints immediately (used
+    after a 401)."""
+    global _service_token, _token_expiry
+    if not force and _service_token is not None and time.monotonic() < _token_expiry:
+        return _service_token
+    try:
+        resp = session.post(
+            SERVICE_TOKEN_URL,
+            json={"client_secret": SERVICE_CLIENT_SECRET},
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        log(f"✗ service-token request failed: {e}")
+        return None
+    if resp.status_code != 200:
+        log(f"✗ service-token {resp.status_code}: {resp.text[:160]}")
+        return None
+    data = resp.json()
+    _service_token = data["access_token"]
+    # Refresh a little before the real expiry to avoid racing the clock.
+    _token_expiry = time.monotonic() + max(float(data.get("expires_in", 3600)) - 30, 30)
+    log("🔑 minted network service token")
+    return _service_token
+
+
+def authed_post(session: requests.Session, url: str, json_body: dict | None) -> requests.Response | None:
+    """POST with the service token; on a 401 re-mint once and retry. Returns the
+    Response, or None on a connection-level failure."""
+    for attempt in (1, 2):
+        token = get_service_token(session, force=(attempt == 2))
+        if token is None:
+            return None
+        try:
+            resp = session.post(
+                url,
+                json=json_body,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=REQUEST_TIMEOUT,
+            )
+        except requests.RequestException as e:
+            log(f"✗ request to {url} failed: {e}")
+            return None
+        if resp.status_code == 401 and attempt == 1:
+            log("· service token rejected (401) — re-minting")
+            continue
+        return resp
+    return None
 
 
 def pick_card() -> str | None:
@@ -81,10 +148,10 @@ def pick_card() -> str | None:
 def authorize(session: requests.Session, card_id: str, amount: float, merchant: str) -> dict | None:
     """Return the auth response dict, or None on request failure."""
     payload = {"account_id": card_id, "amount": round(amount, 2), "merchant": merchant}
-    try:
-        resp = session.post(AUTHORIZE_URL, json=payload, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as e:
-        log(f"✗ authorize failed: {e}")
+    # Future: enrich with fraud signals (device fingerprint, geo, MCC) here so
+    # the issuer's risk engine has more to score on.
+    resp = authed_post(session, AUTHORIZE_URL, payload)
+    if resp is None:
         return None
     if resp.status_code in (200, 201):
         return resp.json()
@@ -93,10 +160,8 @@ def authorize(session: requests.Session, card_id: str, amount: float, merchant: 
 
 
 def capture(session: requests.Session, auth_id: str) -> bool:
-    try:
-        resp = session.post(CAPTURE_URL, json={"auth_id": auth_id}, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as e:
-        log(f"  ✗ capture failed: {e}")
+    resp = authed_post(session, CAPTURE_URL, {"auth_id": auth_id})
+    if resp is None:
         return False
     if resp.status_code == 201:
         return True
@@ -105,10 +170,8 @@ def capture(session: requests.Session, auth_id: str) -> bool:
 
 
 def settle(session: requests.Session) -> None:
-    try:
-        resp = session.post(SETTLE_URL, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as e:
-        log(f"⚙ settlement failed: {e}")
+    resp = authed_post(session, SETTLE_URL, None)
+    if resp is None:
         return
     if resp.status_code in (200, 201):
         d = resp.json()

@@ -1,0 +1,28 @@
+meta {
+  name: Login
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/login
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "jane.doe3@example.com",
+    "password": "securepass123"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("accessToken", res.body.access_token);
+  bru.setEnvVar("refreshToken", res.body.refresh_token);
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

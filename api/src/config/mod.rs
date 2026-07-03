@@ -48,6 +48,9 @@ pub struct SecuritySettings {
     pub lockout_duration: u64,
     pub session_timeout: i64,
     pub require_mfa: bool,
+    /// Shared secret presented by the card network/processor to mint a service
+    /// token at `POST /auth/service-token` (OAuth client-credentials style).
+    pub service_client_secret: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -116,16 +119,17 @@ impl Default for Settings {
             },
             jwt: JwtSettings {
                 secret: "your-super-secret-jwt-key-change-this-in-production".to_string(),
-                expires_in: 3600, // 1 hour
+                expires_in: 900,            // 15 min (short-lived access token)
                 refresh_expires_in: 604800, // 1 week
                 issuer: "nano-bank".to_string(),
             },
             security: SecuritySettings {
                 password_min_length: 8,
                 max_login_attempts: 5,
-                lockout_duration: 900, // 15 minutes
+                lockout_duration: 900,  // 15 minutes
                 session_timeout: 86400, // 24 hours
                 require_mfa: false,
+                service_client_secret: "nano-bank-visa-network-secret-change-me".to_string(),
             },
             logging: LoggingSettings {
                 level: "info".to_string(),

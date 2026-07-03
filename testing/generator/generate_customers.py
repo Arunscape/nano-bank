@@ -33,6 +33,7 @@ SAVINGS_PROB = float(os.getenv("SAVINGS_PROB", "0.6"))
 CREDIT_CARD_PROB = float(os.getenv("CREDIT_CARD_PROB", "0.4"))
 
 CUSTOMERS_URL = f"{API_BASE_URL}/api/v1/customers"
+LOGIN_URL = f"{API_BASE_URL}/api/v1/auth/login"
 ACCOUNTS_URL = f"{API_BASE_URL}/api/v1/accounts"
 HEALTH_URL = f"{API_BASE_URL}/health"
 
@@ -87,9 +88,9 @@ def wait_for_api(retries: int = 30) -> None:
     log(f"⚠️  API never became healthy at {API_BASE_URL}; trying anyway")
 
 
-def register_one(session: requests.Session) -> dict | None:
-    """Create one customer; retry on the rare duplicate (409). Returns the
-    created customer record, or None on failure."""
+def register_one(session: requests.Session) -> tuple[dict, str] | None:
+    """Create one customer; retry on the rare duplicate (409). Returns
+    (customer record, plaintext password) so the caller can log in, or None."""
     for _ in range(3):
         payload = make_customer()
         try:
@@ -102,7 +103,7 @@ def register_one(session: requests.Session) -> dict | None:
             data = resp.json()
             log(f"✓ created {data['first_name']} {data['last_name']} "
                 f"<{data['email']}>  id={data['customer_id'][:8]}  kyc={data['kyc_status']}")
-            return data
+            return data, payload["password"]
         if resp.status_code == 409:
             log("· duplicate, regenerating …")
             continue
@@ -112,11 +113,33 @@ def register_one(session: requests.Session) -> dict | None:
     return None
 
 
-def open_account(session: requests.Session, customer_id: str, account_type: str) -> bool:
-    """Open one account of the given type ('chequing'|'savings'|'credit_card')."""
-    payload = {"customer_id": customer_id, "account_type": account_type}
+def login(session: requests.Session, email: str, password: str) -> str | None:
+    """Log in as a customer and return their JWT access token, or None.
+
+    This is the consumer-app plane: the customer authenticates with their own
+    credentials, exactly as a person would in the banking app before opening an
+    account."""
     try:
-        resp = session.post(ACCOUNTS_URL, json=payload, timeout=REQUEST_TIMEOUT)
+        resp = session.post(
+            LOGIN_URL, json={"email": email, "password": password}, timeout=REQUEST_TIMEOUT
+        )
+    except requests.RequestException as e:
+        log(f"  ✗ login failed: {e}")
+        return None
+    if resp.status_code == 200:
+        return resp.json()["access_token"]
+    log(f"  ✗ login {resp.status_code}: {resp.text[:200]}")
+    return None
+
+
+def open_account(session: requests.Session, token: str, account_type: str) -> bool:
+    """Open one account of the given type ('chequing'|'savings'|'credit_card').
+
+    The owning customer comes from the bearer token, not the body."""
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {"account_type": account_type}
+    try:
+        resp = session.post(ACCOUNTS_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
     except requests.RequestException as e:
         log(f"  ✗ account request failed: {e}")
         return False
@@ -146,17 +169,20 @@ def main() -> int:
     made = 0
     try:
         while COUNT == 0 or made < COUNT:
-            customer = register_one(session)
-            if customer:
+            registered = register_one(session)
+            if registered:
+                customer, password = registered
                 made += 1
-                cid = customer["customer_id"]
-                # Everyone gets a chequing account; some also open savings
-                # and/or a credit card.
-                open_account(session, cid, "chequing")
-                if random.random() < SAVINGS_PROB:
-                    open_account(session, cid, "savings")
-                if random.random() < CREDIT_CARD_PROB:
-                    open_account(session, cid, "credit_card")
+                # Log in as the new customer, then open accounts with their token.
+                token = login(session, customer["email"], password)
+                if token:
+                    # Everyone gets a chequing account; some also open savings
+                    # and/or a credit card.
+                    open_account(session, token, "chequing")
+                    if random.random() < SAVINGS_PROB:
+                        open_account(session, token, "savings")
+                    if random.random() < CREDIT_CARD_PROB:
+                        open_account(session, token, "credit_card")
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:
         log("interrupted")

@@ -26,15 +26,19 @@ pub async fn api_docs() -> Result<Html<String>, StatusCode> {
     <h2>🔐 Authentication Endpoints</h2>
     <div class="endpoint">
         <span class="method post">POST</span> <code>/api/v1/auth/login</code><br>
-        Authenticate customer and get access token
+        Authenticate customer and get access token (customer plane)
+    </div>
+    <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/auth/service-token</code><br>
+        Mint a network-plane service token (client-credentials) — used by the card network for <code>/cards/*</code>
     </div>
     <div class="endpoint">
         <span class="method post">POST</span> <code>/api/v1/auth/refresh</code><br>
-        Refresh access token using refresh token
+        Exchange a refresh token for a new access token (refresh token is rotated)
     </div>
     <div class="endpoint">
         <span class="method post">POST</span> <code>/api/v1/auth/logout</code><br>
-        Logout and invalidate session
+        Terminate the session and revoke its refresh token
     </div>
 
     <h2>👤 Customer Management</h2>

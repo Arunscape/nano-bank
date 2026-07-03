@@ -1,19 +1,19 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     response::Json,
     routing::get,
     Router,
 };
 use rust_decimal::Decimal;
-use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::handlers::AppState;
+use crate::middleware::auth::AuthenticatedCustomer;
 use crate::models::account::{
-    Account, AccountBalanceResponse, AccountResponse, AccountSummary, AccountType,
-    ActiveHold, CreateAccountRequest,
+    Account, AccountBalanceResponse, AccountResponse, AccountSummary, AccountType, ActiveHold,
+    CreateAccountRequest,
 };
 
 /// Opening terms for a new account, by type.
@@ -61,15 +61,9 @@ pub fn account_routes() -> Router<AppState> {
         .route("/:id/balance", get(get_balance))
 }
 
-// TODO: replace customer_id query param with JWT principal once /auth/login is implemented
-#[derive(Deserialize)]
-struct AccountsQuery {
-    customer_id: Uuid,
-}
-
 async fn get_accounts(
     State(state): State<AppState>,
-    Query(params): Query<AccountsQuery>,
+    auth: AuthenticatedCustomer,
 ) -> Result<Json<Vec<AccountSummary>>, AppError> {
     let accounts = sqlx::query_as::<_, Account>(
         "SELECT account_id, customer_id, account_number, account_type, currency,
@@ -77,7 +71,7 @@ async fn get_accounts(
                 minimum_balance, created_at, updated_at, activated_at, closed_at
          FROM accounts WHERE customer_id = $1 ORDER BY created_at DESC",
     )
-    .bind(params.customer_id)
+    .bind(auth.customer_id)
     .fetch_all(&state.pool)
     .await
     .map_err(AppError::Database)?;
@@ -105,6 +99,7 @@ async fn get_accounts(
 /// but ignored for now to keep the double-entry invariant intact.
 async fn create_account(
     State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
     Json(payload): Json<CreateAccountRequest>,
 ) -> Result<(StatusCode, Json<AccountResponse>), AppError> {
     let terms = opening_terms(&payload.account_type);
@@ -125,7 +120,7 @@ async fn create_account(
                 minimum_balance, created_at, updated_at, activated_at, closed_at
             "#,
         )
-        .bind(payload.customer_id)
+        .bind(auth.customer_id)
         .bind(&account_number)
         .bind(&payload.account_type)
         .bind(terms.interest_rate)
@@ -180,6 +175,7 @@ async fn create_account(
 
 async fn get_account(
     State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AccountResponse>, AppError> {
     let account = sqlx::query_as::<_, Account>(
@@ -196,11 +192,17 @@ async fn get_account(
         e => AppError::Database(e),
     })?;
 
+    // Ownership: don't reveal that another customer's account exists — 404, not 403.
+    if account.customer_id != auth.customer_id {
+        return Err(AppError::NotFound("Account not found".to_string()));
+    }
+
     Ok(Json(account.into()))
 }
 
 async fn get_balance(
     State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AccountBalanceResponse>, AppError> {
     let account = sqlx::query_as::<_, Account>(
@@ -216,6 +218,11 @@ async fn get_balance(
         sqlx::Error::RowNotFound => AppError::NotFound("Account not found".to_string()),
         e => AppError::Database(e),
     })?;
+
+    // Ownership: don't reveal that another customer's account exists — 404, not 403.
+    if account.customer_id != auth.customer_id {
+        return Err(AppError::NotFound("Account not found".to_string()));
+    }
 
     let holds = sqlx::query_as::<_, ActiveHold>(
         "SELECT hold_id, amount, reason, expires_at
