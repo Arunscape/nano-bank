@@ -48,6 +48,7 @@ use crate::handlers::cards::{
 };
 use crate::handlers::AppState;
 use crate::ledger::Account as GlAccount;
+use crate::middleware::auth::AuthenticatedCustomer;
 use crate::models::account::{Account, AccountStatus, AccountType};
 use crate::models::transaction::{
     DepositRequest, MoneyTransferRequest, Transaction, TransactionEntry, TransactionEntryResponse,
@@ -131,6 +132,7 @@ async fn ensure_external_cash_account(pool: &DatabasePool) -> Result<Uuid, sqlx:
 /// up), `EXTERNAL_CASH` debited. Posts debit `Bank` / credit `Payable` to the GL.
 async fn deposit_money(
     State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
     Json(req): Json<DepositRequest>,
 ) -> Result<(StatusCode, Json<TransactionResponse>), AppError> {
     req.validate()?;
@@ -142,6 +144,11 @@ async fn deposit_money(
     let account = fetch_account_for_update(&mut tx, req.account_id)
         .await?
         .ok_or_else(|| AppError::NotFound("account not found".to_string()))?;
+    // Ownership: derive the actor from the token, not the request. Don't reveal
+    // another customer's account exists — 404, not 403 (mirrors accounts.rs).
+    if account.customer_id != auth.customer_id {
+        return Err(AppError::NotFound("account not found".to_string()));
+    }
     ensure_operable(&account)?;
 
     // Lock the counterparty too (customer first, then cash) for a stable order.
@@ -204,6 +211,7 @@ async fn deposit_money(
 /// `Payable` / credit `Bank` to the GL.
 async fn withdraw_money(
     State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
     Json(req): Json<WithdrawalRequest>,
 ) -> Result<(StatusCode, Json<TransactionResponse>), AppError> {
     req.validate()?;
@@ -215,6 +223,10 @@ async fn withdraw_money(
     let account = fetch_account_for_update(&mut tx, req.account_id)
         .await?
         .ok_or_else(|| AppError::NotFound("account not found".to_string()))?;
+    // Ownership: only the account holder may withdraw. 404 to avoid leaking existence.
+    if account.customer_id != auth.customer_id {
+        return Err(AppError::NotFound("account not found".to_string()));
+    }
     ensure_operable(&account)?;
 
     if account.available_balance < amount {
@@ -295,6 +307,7 @@ async fn withdraw_money(
 /// Local-only (no GL post — see the module docs).
 async fn transfer_money(
     State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
     Json(req): Json<MoneyTransferRequest>,
 ) -> Result<(StatusCode, Json<TransactionResponse>), AppError> {
     req.validate()?;
@@ -307,10 +320,11 @@ async fn transfer_money(
     }
 
     // Idempotent replay: return the already-posted transfer for a known key.
+    // Scoped to the caller so a key can't surface another customer's transfer.
     // (Best-effort — no unique index, so tightly-concurrent duplicates with the
     // same key could still both post; acceptable for this toy.)
     if let Some(key) = req.idempotency_key.as_deref() {
-        if let Some(existing) = find_by_idempotency_key(&state.pool, key).await? {
+        if let Some(existing) = find_by_idempotency_key(&state.pool, key, auth.customer_id).await? {
             let resp = load_transaction_response(&state.pool, existing).await?;
             return Ok((StatusCode::OK, Json(resp)));
         }
@@ -333,6 +347,13 @@ async fn transfer_money(
     let to = fetch_account_for_update(&mut tx, req.to_account_id)
         .await?
         .ok_or_else(|| AppError::NotFound("to account not found".to_string()))?;
+
+    // Ownership: the caller may only move money out of their own account. The
+    // destination can belong to anyone. 404 (not 403) so a non-owned `from`
+    // account is indistinguishable from a missing one.
+    if from.customer_id != auth.customer_id {
+        return Err(AppError::NotFound("from account not found".to_string()));
+    }
 
     ensure_operable(&from)?;
     ensure_operable(&to)?;
@@ -420,20 +441,19 @@ const TXN_COLUMNS: &str = "t.transaction_id, t.reference_number, t.transaction_t
 /// Query transaction history with optional filters and pagination.
 async fn get_transactions(
     State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
     Query(q): Query<TransactionHistoryQuery>,
 ) -> Result<Json<TransactionHistoryResponse>, AppError> {
     let limit = q.limit.unwrap_or(DEFAULT_HISTORY_LIMIT).clamp(1, 100);
     let offset = q.offset.unwrap_or(0);
 
-    // total_count with the same filters (DISTINCT when joining entries).
-    let count_base = if q.account_id.is_some() {
-        "SELECT COUNT(DISTINCT t.transaction_id) FROM transactions t \
-         JOIN transaction_entries e ON e.transaction_id = t.transaction_id"
-    } else {
-        "SELECT COUNT(*) FROM transactions t"
-    };
+    // Every query is scoped to the caller's own accounts (a leg on an account
+    // they own), so history never leaks another customer's activity. That scope
+    // always joins `transaction_entries`, so both queries are DISTINCT.
+    let count_base = "SELECT COUNT(DISTINCT t.transaction_id) FROM transactions t \
+         JOIN transaction_entries e ON e.transaction_id = t.transaction_id";
     let mut count_qb = QueryBuilder::<Postgres>::new(count_base);
-    push_filters(&mut count_qb, &q);
+    push_filters(&mut count_qb, &q, auth.customer_id);
     let total: i64 = count_qb
         .build_query_scalar()
         .fetch_one(&state.pool)
@@ -441,16 +461,12 @@ async fn get_transactions(
         .map_err(AppError::Database)?;
 
     // The page itself.
-    let page_base = if q.account_id.is_some() {
-        format!(
-            "SELECT DISTINCT {TXN_COLUMNS} FROM transactions t \
-             JOIN transaction_entries e ON e.transaction_id = t.transaction_id"
-        )
-    } else {
-        format!("SELECT {TXN_COLUMNS} FROM transactions t")
-    };
+    let page_base = format!(
+        "SELECT DISTINCT {TXN_COLUMNS} FROM transactions t \
+         JOIN transaction_entries e ON e.transaction_id = t.transaction_id"
+    );
     let mut page_qb = QueryBuilder::<Postgres>::new(page_base);
-    push_filters(&mut page_qb, &q);
+    push_filters(&mut page_qb, &q, auth.customer_id);
     page_qb.push(" ORDER BY t.created_at DESC LIMIT ");
     page_qb.push_bind(limit as i64);
     page_qb.push(" OFFSET ");
@@ -494,35 +510,34 @@ async fn get_transactions(
     }))
 }
 
-fn push_filters(qb: &mut QueryBuilder<'_, Postgres>, q: &TransactionHistoryQuery) {
-    let mut started = false;
-    let sep = |qb: &mut QueryBuilder<'_, Postgres>, started: &mut bool| {
-        qb.push(if *started { " AND " } else { " WHERE " });
-        *started = true;
-    };
+fn push_filters(
+    qb: &mut QueryBuilder<'_, Postgres>,
+    q: &TransactionHistoryQuery,
+    customer_id: Uuid,
+) {
+    // Ownership scope is always present (only legs on the caller's accounts), so
+    // every subsequent user filter is an AND.
+    qb.push(" WHERE e.account_id IN (SELECT account_id FROM accounts WHERE customer_id = ");
+    qb.push_bind(customer_id);
+    qb.push(")");
     if let Some(account_id) = q.account_id {
-        sep(qb, &mut started);
-        qb.push("e.account_id = ");
+        qb.push(" AND e.account_id = ");
         qb.push_bind(account_id);
     }
     if let Some(ref transaction_type) = q.transaction_type {
-        sep(qb, &mut started);
-        qb.push("t.transaction_type = ");
+        qb.push(" AND t.transaction_type = ");
         qb.push_bind(transaction_type.clone());
     }
     if let Some(ref status) = q.status {
-        sep(qb, &mut started);
-        qb.push("t.status = ");
+        qb.push(" AND t.status = ");
         qb.push_bind(status.clone());
     }
     if let Some(start_date) = q.start_date {
-        sep(qb, &mut started);
-        qb.push("t.created_at >= ");
+        qb.push(" AND t.created_at >= ");
         qb.push_bind(start_date);
     }
     if let Some(end_date) = q.end_date {
-        sep(qb, &mut started);
-        qb.push("t.created_at <= ");
+        qb.push(" AND t.created_at <= ");
         qb.push_bind(end_date);
     }
 }
@@ -729,12 +744,15 @@ async fn record_summary(
 async fn find_by_idempotency_key(
     pool: &DatabasePool,
     key: &str,
+    customer_id: Uuid,
 ) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT transaction_id FROM transactions \
-         WHERE transaction_type = 'transfer' AND metadata->>'idempotency_key' = $1 LIMIT 1",
+         WHERE transaction_type = 'transfer' AND initiated_by = $2 \
+         AND metadata->>'idempotency_key' = $1 LIMIT 1",
     )
     .bind(key)
+    .bind(customer_id)
     .fetch_optional(pool)
     .await
 }
