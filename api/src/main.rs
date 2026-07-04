@@ -152,6 +152,9 @@ async fn create_router(
         // Credit-card payment rails (issuer endpoints)
         .nest("/api/v1/cards", handlers::cards::card_routes())
 
+        // Interac e-Transfer rails
+        .nest("/api/v1/interac", handlers::interac::interac_routes())
+
         // Transaction routes
         .nest("/api/v1/transactions", handlers::transactions::transaction_routes())
 

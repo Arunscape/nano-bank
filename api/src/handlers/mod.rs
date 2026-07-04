@@ -4,6 +4,7 @@ pub mod cards;
 pub mod customers;
 pub mod docs;
 pub mod health;
+pub mod interac;
 pub mod ledger;
 pub mod security;
 pub mod transactions;
