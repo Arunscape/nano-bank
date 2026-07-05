@@ -124,6 +124,20 @@ async fn bump_batch(
     Ok(())
 }
 
+async fn load_batch(state: &AppState, batch_id: Uuid) -> Result<BatchResponse, AppError> {
+    let r = sqlx::query_as::<_, (Uuid, String, String, i32, Decimal, Decimal, Option<String>)>(
+        "SELECT batch_id, direction::text, status::text, entry_count, total_credits, total_debits, file_ref \
+         FROM aft_batches WHERE batch_id = $1",
+    )
+    .bind(batch_id)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(BatchResponse {
+        batch_id: r.0, direction: r.1, status: r.2, entry_count: r.3,
+        total_credits: r.4, total_debits: r.5, file_ref: r.6,
+    })
+}
+
 async fn load_entry(state: &AppState, entry_id: Uuid) -> Result<EntryResponse, AppError> {
     let r = sqlx::query_as::<_, (Uuid, Uuid, String, String, Decimal, String, Option<String>, Option<String>)>(
         "SELECT entry_id, batch_id, kind::text, direction::text, amount, status::text, payee_name, return_reason \
@@ -321,14 +335,173 @@ async fn create_debit(
 async fn list_batches() -> Result<StatusCode, AppError> {
     Err(AppError::Internal("todo".into()))
 }
-async fn submit_batch() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+async fn submit_batch(
+    State(state): State<AppState>,
+    _caller: AuthenticatedCustomer,
+    Path(batch_id): Path<Uuid>,
+) -> Result<Json<BatchResponse>, AppError> {
+    let mut tx = state.pool.begin().await?;
+    let status: String =
+        sqlx::query_scalar("SELECT status::text FROM aft_batches WHERE batch_id=$1 FOR UPDATE")
+            .bind(batch_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| AppError::NotFound("batch not found".into()))?;
+    if status != "open" {
+        return Err(AppError::Conflict(format!("batch is {status}")));
+    }
+
+    let rows = sqlx::query_as::<_, (String, Decimal, Option<String>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT kind::text, amount, counterparty_institution, counterparty_transit, \
+         counterparty_account, payee_name FROM aft_entries WHERE batch_id=$1 ORDER BY created_at",
+    )
+    .bind(batch_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let (entry_count, total_credits, total_debits): (i32, Decimal, Decimal) = sqlx::query_as(
+        "SELECT entry_count, total_credits, total_debits FROM aft_batches WHERE batch_id=$1",
+    )
+    .bind(batch_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let due = chrono::Utc::now().format("%Y%j").to_string();
+    let details: Vec<cpa005::Detail> = rows
+        .iter()
+        .map(|r| cpa005::Detail {
+            txn_code: if r.0 == "credit" { 'C' } else { 'D' },
+            amount: r.1,
+            institution: r.2.clone().unwrap_or_default(),
+            transit: r.3.clone().unwrap_or_default(),
+            account: r.4.clone().unwrap_or_default(),
+            payee_name: r.5.clone().unwrap_or_default(),
+            originator_short: "NANO".into(),
+            due_date: due.clone(),
+            return_reason: None,
+        })
+        .collect();
+    let header = cpa005::Header {
+        originator_id: "0000000900".into(),
+        created: due.clone(),
+        file_seq: 1,
+    };
+    let trailer = cpa005::Trailer {
+        entry_count: entry_count as u32,
+        total_credits,
+        total_debits,
+    };
+    let file = cpa005::encode(&header, &details, &trailer);
+
+    let dir = aft_file_dir();
+    std::fs::create_dir_all(&dir).ok();
+    let path = format!("{dir}/{batch_id}.005");
+    std::fs::write(&path, &file).map_err(|e| AppError::Internal(format!("write CPA-005 file: {e}")))?;
+
+    sqlx::query("UPDATE aft_batches SET status='submitted', file_ref=$2, cutoff_at=CURRENT_TIMESTAMP WHERE batch_id=$1")
+        .bind(batch_id)
+        .bind(&path)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    tracing::info!(%batch_id, entries = entry_count, file = %path, "📄 AFT batch submitted");
+    Ok(Json(load_batch(&state, batch_id).await?))
 }
 async fn list_entries() -> Result<StatusCode, AppError> {
     Err(AppError::Internal("todo".into()))
 }
-async fn network_settle() -> Result<StatusCode, AppError> {
-    Err(AppError::Internal("todo".into()))
+async fn network_settle(
+    State(state): State<AppState>,
+    _svc: AuthenticatedService,
+    Path(batch_id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let rail = resolve_aft(&state).await?;
+    let mut tx = state.pool.begin().await?;
+    let status: String =
+        sqlx::query_scalar("SELECT status::text FROM aft_batches WHERE batch_id=$1 FOR UPDATE")
+            .bind(batch_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| AppError::NotFound("batch not found".into()))?;
+    if status != "submitted" {
+        return Err(AppError::Conflict(format!("batch is {status}")));
+    }
+
+    let entries = sqlx::query_as::<_, (Uuid, String, Decimal, Option<Uuid>, Option<Uuid>, Option<String>)>(
+        "SELECT entry_id, kind::text, amount, originator_account_id, counterparty_account_id, \
+         counterparty_institution FROM aft_entries WHERE batch_id=$1 AND status='pending' ORDER BY created_at",
+    )
+    .bind(batch_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut settled = 0i64;
+    let mut rejected = 0i64;
+    let mut settled_credit_total = Decimal::ZERO;
+
+    for (entry_id, kind, amount, originator, counterparty_acct, institution) in entries {
+        if kind == "credit" {
+            // Direct deposit to an external recipient: debit the originator, funds → settlement.
+            let orig = originator.ok_or_else(|| AppError::Internal("credit missing originator".into()))?;
+            let acct = fetch_account_for_update(&mut tx, orig)
+                .await?
+                .ok_or_else(|| AppError::Internal("originator account gone".into()))?;
+            if amount > acct.available_balance {
+                sqlx::query("UPDATE aft_entries SET status='rejected', return_reason='NSF' WHERE entry_id=$1")
+                    .bind(entry_id).execute(&mut *tx).await?;
+                rejected += 1;
+                continue;
+            }
+            zero_available(&mut tx, orig).await?;
+            let hold = rail.hold(&state, &mut tx, orig, amount, "AFT credit settlement").await?;
+            rail.release(&state, &mut tx, &hold,
+                Destination::External(institution.unwrap_or_else(|| "000".into())),
+                "AFT credit settlement").await?;
+            recompute_available(&mut tx, orig).await?;
+            sqlx::query("UPDATE aft_entries SET status='settled', settle_transaction_id=$2 WHERE entry_id=$1")
+                .bind(entry_id).bind(hold.transaction_id).execute(&mut *tx).await?;
+            settled_credit_total += amount;
+            settled += 1;
+        } else {
+            // Intra-bank PAD: payer → biller.
+            let payer = counterparty_acct.ok_or_else(|| AppError::Internal("debit missing payer".into()))?;
+            let biller = originator.ok_or_else(|| AppError::Internal("debit missing biller".into()))?;
+            let acct = fetch_account_for_update(&mut tx, payer)
+                .await?
+                .ok_or_else(|| AppError::Internal("payer account gone".into()))?;
+            if amount > acct.available_balance {
+                sqlx::query("UPDATE aft_entries SET status='rejected', return_reason='NSF' WHERE entry_id=$1")
+                    .bind(entry_id).execute(&mut *tx).await?;
+                rejected += 1;
+                continue;
+            }
+            zero_available(&mut tx, payer).await?;
+            let hold = rail.hold(&state, &mut tx, payer, amount, "AFT PAD settlement").await?;
+            rail.release(&state, &mut tx, &hold, Destination::Internal(biller), "AFT PAD settlement").await?;
+            recompute_available(&mut tx, payer).await?;
+            recompute_available(&mut tx, biller).await?;
+            sqlx::query("UPDATE aft_entries SET status='settled', settle_transaction_id=$2 WHERE entry_id=$1")
+                .bind(entry_id).bind(hold.transaction_id).execute(&mut *tx).await?;
+            settled += 1;
+        }
+    }
+
+    // Settlement sweep: realize the external direct-deposit cash to Bank (aggregate
+    // GL). Per-entry posts are Payable/Payable reclasses; cash hits Bank here.
+    if settled_credit_total > Decimal::ZERO {
+        post_gl_entry(&state, &reference_number("AFTS"), "AFT settlement sweep",
+            GlAccount::Payable, GlAccount::Bank, settled_credit_total).await?;
+    }
+
+    sqlx::query("UPDATE aft_batches SET status='settled', settled_at=CURRENT_TIMESTAMP WHERE batch_id=$1")
+        .bind(batch_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+
+    tracing::info!(%batch_id, settled, rejected, swept = %settled_credit_total, "🏦 AFT batch settled");
+    Ok(Json(serde_json::json!({
+        "settled_entries": settled, "rejected": rejected, "swept_credits": settled_credit_total
+    })))
 }
 async fn network_inbound_batch() -> Result<StatusCode, AppError> {
     Err(AppError::Internal("todo".into()))
