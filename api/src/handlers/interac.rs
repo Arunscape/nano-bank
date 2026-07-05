@@ -21,8 +21,8 @@ use crate::handlers::cards::{fetch_account_for_update, normalize_amount};
 use crate::handlers::AppState;
 use crate::middleware::auth::{AuthenticatedCustomer, AuthenticatedService};
 use crate::models::interac::{
-    ClaimEtransferRequest, EtransferResponse, HandleResponse, RegisterAutodepositRequest,
-    SendEtransferRequest,
+    ClaimEtransferRequest, EtransferResponse, HandleResponse, InboundEtransferRequest,
+    RegisterAutodepositRequest, SendEtransferRequest,
 };
 use crate::rails::interac::{ensure_interac_accounts, normalize_handle, InteracRail};
 use crate::rails::{Destination, Rail};
@@ -655,6 +655,76 @@ async fn deregister_autodeposit(
     }
     Ok(StatusCode::NO_CONTENT)
 }
-async fn network_inbound() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
+async fn network_inbound(
+    State(state): State<AppState>,
+    _svc: AuthenticatedService,
+    AxumJson(req): AxumJson<InboundEtransferRequest>,
+) -> Result<(StatusCode, Json<EtransferResponse>), AppError> {
+    let amount = normalize_amount(req.amount)?;
+    let handle = normalize_handle(req.recipient_handle_type, &req.recipient_handle_value);
+    let rail = resolve_interac(&state).await?;
+
+    // The recipient must be a known nano-bank handle.
+    let reg = sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
+        "SELECT customer_id, autodeposit_account_id FROM interac_handles WHERE handle_value=$1 AND active=TRUE")
+        .bind(&handle).fetch_optional(&state.pool).await?
+        .ok_or_else(|| AppError::NotFound("recipient handle not registered at this institution".into()))?;
+
+    let answer_hash = match &req.security_answer {
+        Some(a) => Some(hash_password(&a.to_lowercase())?),
+        None => None,
+    };
+    let claim_token = crate::handlers::cards::reference_number("CLM");
+
+    let mut tx = state.pool.begin().await?;
+
+    if let Some(deposit_acct) = reg.1 {
+        // Autodeposit fast path.
+        let posting = rail.accept_inbound(&state, &mut tx, deposit_acct, amount,
+            &format!("Interac e-Transfer from {}", req.sender_name)).await?;
+        let id = insert_inbound(&mut tx, amount, &req, &handle, reg.0, &claim_token,
+            None, Some(deposit_acct), Some(posting.transaction_id), "deposited").await?;
+        recompute_available(&mut tx, deposit_acct).await?;
+        notify(&mut tx, id, &handle, "deposit_completed", &format!("${amount} auto-deposited"), None).await?;
+        tx.commit().await?;
+        return Ok((StatusCode::CREATED, Json(load_etransfer(&state, id).await?)));
+    }
+
+    // Held path: money arrives from the network into clearing (from = SETTLEMENT).
+    let hold = rail.hold(&state, &mut tx, rail.accounts.settlement_id, amount,
+        &format!("Interac inbound e-Transfer from {}", req.sender_name)).await?;
+    let id = insert_inbound(&mut tx, amount, &req, &handle, reg.0, &claim_token,
+        answer_hash, None, Some(hold.transaction_id), "available").await?;
+    notify(&mut tx, id, &handle, "incoming_transfer",
+        &format!("You have an Interac e-Transfer of ${amount} from {}", req.sender_name), Some(&claim_token)).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(load_etransfer(&state, id).await?)))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_inbound(
+    tx: &mut crate::rails::PgTx<'_>, amount: Decimal, req: &InboundEtransferRequest,
+    handle: &str, recipient_customer: Uuid, claim_token: &str,
+    answer_hash: Option<String>, recipient_account: Option<Uuid>,
+    hold_txn: Option<Uuid>, status: &str,
+) -> Result<Uuid, AppError> {
+    let id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO interac_etransfers
+            (direction, status, amount, sender_name, recipient_handle_type, recipient_handle_value,
+             recipient_customer_id, recipient_account_id, counterparty_institution,
+             security_question, security_answer_hash, claim_token, memo, hold_transaction_id, expires_at)
+        VALUES ('inbound',$1::interac_status,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+                CURRENT_TIMESTAMP + interval '30 days')
+        RETURNING etransfer_id
+        "#,
+    )
+    .bind(status).bind(amount).bind(&req.sender_name).bind(req.recipient_handle_type)
+    .bind(handle).bind(recipient_customer).bind(recipient_account).bind(&req.counterparty_institution)
+    .bind(&req.security_question).bind(&answer_hash).bind(claim_token).bind(&req.memo).bind(hold_txn)
+    .fetch_one(&mut **tx).await?;
+    Ok(id)
+}
+
 async fn network_settle() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
 async fn sweep_expired() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
