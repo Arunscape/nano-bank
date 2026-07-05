@@ -530,7 +530,8 @@ async fn get_transaction(
 
 /// Reverse a completed deposit/withdrawal/transfer by posting its mirror. Only
 /// the initiator may reverse it. v1: rejects rather than forcing a negative
-/// clawback, and does not refund a transfer fee.
+/// clawback, does not refund a transfer fee, and does not restore the
+/// `account_limits` counters the original consumed.
 async fn reverse_transaction(
     State(state): State<AppState>,
     auth: AuthenticatedCustomer,
@@ -590,14 +591,22 @@ async fn reverse_transaction(
 
     let mut tx = state.pool.begin().await?;
 
-    // Lock both accounts in ascending id order (matches the transfer path).
-    let (first, second) = if rev_debit < rev_credit {
-        (rev_debit, rev_credit)
-    } else {
-        (rev_credit, rev_debit)
-    };
-    fetch_account_for_update(&mut tx, first).await?;
-    fetch_account_for_update(&mut tx, second).await?;
+    // Lock in a globally consistent order to avoid deadlocks: customer
+    // account(s) first (id-sorted), then EXTERNAL_CASH *last*. deposit/withdrawal
+    // and the transfer-fee path all lock cash last, so the reversal must too —
+    // sorting purely by id could otherwise lock cash before the customer account
+    // (when cash_id sorts lower) and deadlock a concurrent deposit/withdrawal.
+    let mut lock_order: Vec<Uuid> = [rev_debit, rev_credit]
+        .into_iter()
+        .filter(|a| *a != cash_id)
+        .collect();
+    lock_order.sort_unstable();
+    if rev_debit == cash_id || rev_credit == cash_id {
+        lock_order.push(cash_id);
+    }
+    for account_id in &lock_order {
+        fetch_account_for_update(&mut tx, *account_id).await?;
+    }
 
     // Guarded status transition: the first reverser wins; a concurrent second
     // sees 0 rows updated and gets a 409 — no double clawback.
