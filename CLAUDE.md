@@ -87,6 +87,7 @@ Implemented handlers (real SQL + logic):
 - `POST /api/v1/accounts` — `handlers/accounts.rs`
 - `POST /api/v1/cards/authorize|capture|settle` — `handlers/cards.rs`
 - `POST /api/v1/transactions/deposit|withdrawal|transfer`, `GET /api/v1/transactions` — `handlers/transactions.rs`
+- `POST /api/v1/interac/*` — Interac e-Transfer rail — `handlers/interac.rs` (see "Interac e-Transfer rail" below)
 - `GET /health`, `GET /docs`
 
 Everything else (`auth`, `security`, GET endpoints for customers/accounts) returns a static `"... endpoint - TODO: implement"` string.
@@ -197,6 +198,43 @@ and post the aggregate effect through the port (deposit: debit `Bank` / credit
 accounts map to the same `Payable` GL role, so the net GL effect is zero. All
 three enforce balance/status/type checks and the `account_limits` counters, and
 update `daily_transaction_summaries`; transfer honors an `idempotency_key`.
+
+## Interac e-Transfer rail
+
+The first **external payment rail**, built on a small `Rail` port that sits
+*beside* the `Ledger` port (`api/src/rails/`, see also `api/CLAUDE.md` and the
+`.claude/skills/nano-bank-rails` skill; design spec in
+`docs/specs/2026-07-04-interac-rail-foundation-design.md`).
+
+- **Rail port** (`rails/mod.rs`): the verbs `hold` / `release` / `refund` /
+  `accept_inbound`, each taking `&mut PgTx` so the local double-entry and the
+  aggregate GL post commit or roll back together (503 if the core is down). A
+  `Destination` is `Internal(account)` (a nano-bank customer) or
+  `External(institution)` (settles via the settlement account).
+- **Interac system accounts** (`rails/interac.rs`): a *separate* synthetic
+  customer `interac@nano.bank` owns `INTERAC_CLEARING` (chequing, holds in-flight
+  funds) and `INTERAC_SETTLEMENT` (savings, the interbank position), both with a
+  $1T overdraft. Distinct from the card rails' `system@nano.bank` because GL
+  accounts are keyed by `(customer, account_type)`.
+- **Lifecycle** (`handlers/interac.rs`): send → held in `INTERAC_CLEARING` →
+  autodeposit (registered handle) / claim (security Q&A, argon2, 3-strike lock) /
+  decline / cancel / expire (sweep). Inbound: autodeposit fast-path
+  (`accept_inbound`) or held-then-claim. Notifications go to the
+  `interac_notifications` **outbox** table (no real email/SMS).
+- **Three auth planes**: customer (`/etransfers`, `/autodeposit`), service-token
+  **network** (`/network/inbound`, `/network/etransfers/:id/settle` — driven by
+  `testing/interac/interac_simulator.py`), service-token **admin**
+  (`/admin/sweep-expired`). The viewer (`testing/viewer`) has an Interac tab.
+- **`available_balance` note**: the balance trigger maintains only `balance`, so
+  the handlers hand-recompute `available_balance` around rail posts on **customer**
+  accounts; the system clearing/settlement accounts intentionally keep it at 0
+  (they float on the $1T overdraft).
+- **Known v1 gaps / follow-ups**: the autodeposit registration endpoint always
+  sets autodeposit, so there is no API path yet to register a handle *without*
+  autodeposit (the "registered-no-autodeposit" internal-claim branch isn't
+  API-reachable). Deferred: shared `account_limits` integration (pending PR #15),
+  the ACSS-style `INTERAC_SETTLEMENT`→`Bank` settlement sweep (lands with the AFT
+  rail), and Request Money.
 
 ## Gotchas
 

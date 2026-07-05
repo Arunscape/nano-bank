@@ -17,10 +17,15 @@ the big picture (the kernel split and the two cores).
     the legacy `0000xxxxxx` numbers and `Direction` to `S/H`, tags everything
     with company code `1000`, and **truncates `bktxt` to 25 / `xblnr` to 16**
     chars to respect the legacy field widths.
+- `src/rails/` — the **Rail port** for external payment rails (beside the Ledger
+  port). `mod.rs` = `trait Rail { hold, release, refund, accept_inbound }` +
+  neutral types (`RailId`, `Hold`, `Destination`, `RailPosting`); `interac.rs` =
+  `InteracRail` + `ensure_interac_accounts`. See `## Rails` below.
 - `src/handlers/` — axum handlers. `ledger.rs` is the wired journal flow;
   `cards.rs` is the card rails; `transactions.rs` is deposit/withdrawal/transfer
   + history (deposit/withdrawal post to the core, transfer is local-only; it
-  reuses the posting helpers from `cards.rs`); the rest are mostly stubs.
+  reuses the posting helpers from `cards.rs`); `interac.rs` is the Interac
+  e-Transfer lifecycle (`## Rails`); the rest are mostly stubs.
 - `src/errors/mod.rs` — `AppError` → HTTP. Includes `Upstream { status, message }`
   used to **preserve a core's status** when proxying (see below).
 - `src/config/`, `src/models/`, `src/middleware/`, `src/repositories/`,
@@ -55,6 +60,28 @@ failure as `503` (the card op fails so the GL can't drift).
 aggregate GL to the core via `post_gl_entry()` before committing the local tx.
 Note: `cards.rs` imports the ledger `Account` aliased as `GlAccount` because the
 data model already has its own `Account` type.
+
+## Rails (external payment rails)
+
+`src/rails/` is a **Rail port** that sits *beside* the Ledger port. A rail owns
+the local double-entry (customer account ↔ its clearing/settlement system
+accounts) AND posts the aggregate GL through `Ledger`, in one DB transaction —
+the same dual-post pattern as `cards.rs`. The trait verbs are `hold` (reserve
+into clearing), `release` (to an `Internal(account)` or `External(institution)`
+`Destination`), `refund` (return to origin), `accept_inbound` (credit from the
+network). Interac's product lifecycle lives in `handlers/interac.rs`, not the
+trait.
+
+**Interac e-Transfer** (`handlers/interac.rs`, `rails/interac.rs`): a separate
+synthetic customer `interac@nano.bank` owns `INTERAC_CLEARING` (chequing) and
+`INTERAC_SETTLEMENT` (savings), $1T overdraft, bootstrapped at startup like the
+card rails' system accounts. Three auth planes: customer (`/etransfers`,
+`/autodeposit`), service-token network (`/network/*`), service-token admin
+(`/admin/sweep-expired`). Security answers are argon2-hashed (`utils/password`),
+3-strike lock on claim. `available_balance` is hand-recomputed on **customer**
+accounts around rail posts (the balance trigger only maintains `balance`); the
+system clearing/settlement accounts keep it at 0. Full detail in the repo-root
+`CLAUDE.md` and `docs/specs/2026-07-04-interac-rail-foundation-design.md`.
 
 ## Build / run
 
