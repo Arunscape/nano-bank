@@ -777,4 +777,42 @@ async fn network_settle(
     tx.commit().await?;
     Ok((StatusCode::OK, Json(load_etransfer(&state, id).await?)))
 }
-async fn sweep_expired() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
+async fn sweep_expired(
+    State(state): State<AppState>,
+    _svc: AuthenticatedService,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let rail = resolve_interac(&state).await?;
+    // Snapshot the due ids first (short read), then process each in its own tx so
+    // one bad row can't roll back the batch.
+    let due: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT etransfer_id FROM interac_etransfers \
+         WHERE status='available' AND expires_at < CURRENT_TIMESTAMP")
+        .fetch_all(&state.pool).await?;
+
+    let mut expired = 0i64;
+    for id in due {
+        let mut tx = state.pool.begin().await?;
+        // Re-lock + re-check (a concurrent claim may have won).
+        let guard = lock_available(&mut tx, id).await;
+        let (amount, from_account, _r, _h, _a, hold_ref) = match guard {
+            Ok(v) => v,
+            Err(_) => { tx.rollback().await?; continue; }
+        };
+        // Inbound held transfers have no sender_account_id (NULL in the DB, so
+        // lock_available's unwrap_or_default() yields Uuid::nil()); those were
+        // held from the rail's SETTLEMENT account (network → clearing), so
+        // that's where the refund must be credited back.
+        let from_account = if from_account.is_nil() { rail.accounts.settlement_id } else { from_account };
+        let hold = crate::rails::Hold { from_account, amount, reference: hold_ref, transaction_id: Uuid::nil() };
+        rail.refund(&state, &mut tx, &hold, "Interac e-Transfer expired").await?;
+        recompute_available(&mut tx, from_account).await?;
+        sqlx::query("UPDATE interac_etransfers SET status='expired', resolved_at=CURRENT_TIMESTAMP WHERE etransfer_id=$1")
+            .bind(id).execute(&mut *tx).await?;
+        let handle: String = sqlx::query_scalar("SELECT recipient_handle_value FROM interac_etransfers WHERE etransfer_id=$1")
+            .bind(id).fetch_one(&mut *tx).await?;
+        notify(&mut tx, id, &handle, "expired", &format!("${amount} expired and was returned"), None).await?;
+        tx.commit().await?;
+        expired += 1;
+    }
+    Ok(Json(serde_json::json!({ "expired": expired })))
+}
