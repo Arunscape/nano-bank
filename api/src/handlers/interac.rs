@@ -2,6 +2,8 @@
 //! port (`rails::interac::InteracRail`); this module owns handle resolution,
 //! the claim/decline/cancel/expiry state machine, and notifications.
 
+use std::collections::HashMap;
+
 use axum::Json as AxumJson;
 use axum::{
     extract::{Path, Query, State},
@@ -366,8 +368,40 @@ async fn load_etransfer_by_key(
         None => Ok(None),
     }
 }
-async fn list_etransfers() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
-async fn get_etransfer() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
+async fn list_etransfers(
+    State(state): State<AppState>,
+    caller: AuthenticatedCustomer,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<Vec<EtransferResponse>>, AppError> {
+    let status = params.get("status").cloned();
+    let rows = sqlx::query_as::<_, (Uuid, String, String, Decimal, String, Option<String>, Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>)>(
+        "SELECT etransfer_id, direction::text, status::text, amount, recipient_handle_value, \
+         security_question, memo, expires_at, created_at FROM interac_etransfers \
+         WHERE (sender_customer_id=$1 OR recipient_customer_id=$1) \
+           AND ($2::text IS NULL OR status::text=$2) \
+         ORDER BY created_at DESC LIMIT 100",
+    )
+    .bind(caller.customer_id).bind(&status)
+    .fetch_all(&state.pool).await?;
+    Ok(Json(rows.into_iter().map(|r| EtransferResponse {
+        etransfer_id: r.0, direction: r.1, status: r.2, amount: r.3,
+        recipient_handle_value: r.4, security_question: r.5, memo: r.6, expires_at: r.7, created_at: r.8,
+    }).collect()))
+}
+
+async fn get_etransfer(
+    State(state): State<AppState>,
+    caller: AuthenticatedCustomer,
+    Path(id): Path<Uuid>,
+) -> Result<Json<EtransferResponse>, AppError> {
+    let visible: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM interac_etransfers WHERE etransfer_id=$1 \
+         AND (sender_customer_id=$2 OR recipient_customer_id=$2))")
+        .bind(id).bind(caller.customer_id).fetch_one(&state.pool).await?;
+    if !visible { return Err(AppError::NotFound("e-Transfer not found".into())); }
+    Ok(Json(load_etransfer(&state, id).await?))
+}
 
 /// Lock an available e-Transfer FOR UPDATE and return the fields we need, or the
 /// right error (404 unknown, 409 if no longer 'available').
