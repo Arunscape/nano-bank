@@ -19,6 +19,7 @@ SET timezone = 'America/Toronto';
 -- 4. 04_transactions.sql - Transaction processing tables
 -- 5. 05_security.sql - Security and compliance tables
 -- 6. 06_triggers.sql - Database triggers and functions
+-- 7. 07_agents.sql - Agentic banking: agents, mandates, agent action audit
 
 -- To execute all scripts in order:
 -- \i 01_enums.sql
@@ -27,3 +28,4 @@ SET timezone = 'America/Toronto';
 -- \i 04_transactions.sql
 -- \i 05_security.sql
 -- \i 06_triggers.sql
+-- \i 07_agents.sql
