@@ -524,8 +524,15 @@ async fn decline_etransfer(
         transaction_id: Uuid::nil(),
     };
     rail.refund(&state, &mut tx, &hold, "Interac e-Transfer declined").await?;
-    // Sender was just credited back (refund); refresh its available_balance too.
-    recompute_available(&mut tx, sender_account).await?;
+    // Sender was just credited back (refund); refresh its available_balance too —
+    // but only for a real CUSTOMER account. For inbound declines the "sender" is
+    // remapped above to the rail's SETTLEMENT system account, which must keep
+    // available_balance pinned at 0 (see rails/interac.rs invariant); recomputing
+    // it here would pin it to balance+overdraft and later trip
+    // chk_available_balance_logical when settlement is next debited.
+    if sender_account != rail.accounts.settlement_id && sender_account != rail.accounts.clearing_id {
+        recompute_available(&mut tx, sender_account).await?;
+    }
     sqlx::query("UPDATE interac_etransfers SET status='declined', resolved_at=CURRENT_TIMESTAMP WHERE etransfer_id=$1")
         .bind(id).execute(&mut *tx).await?;
     let handle: String =
@@ -814,7 +821,13 @@ async fn sweep_expired(
         let from_account = if from_account.is_nil() { rail.accounts.settlement_id } else { from_account };
         let hold = crate::rails::Hold { from_account, amount, reference: hold_ref, transaction_id: Uuid::nil() };
         rail.refund(&state, &mut tx, &hold, "Interac e-Transfer expired").await?;
-        recompute_available(&mut tx, from_account).await?;
+        // Only recompute for a real CUSTOMER account; skip for the rail's own
+        // SETTLEMENT/CLEARING accounts (inbound held transfers), whose
+        // available_balance must stay pinned at 0 (see decline_etransfer above
+        // for the full rationale).
+        if from_account != rail.accounts.settlement_id && from_account != rail.accounts.clearing_id {
+            recompute_available(&mut tx, from_account).await?;
+        }
         sqlx::query("UPDATE interac_etransfers SET status='expired', resolved_at=CURRENT_TIMESTAMP WHERE etransfer_id=$1")
             .bind(id).execute(&mut *tx).await?;
         let handle: String = sqlx::query_scalar("SELECT recipient_handle_value FROM interac_etransfers WHERE etransfer_id=$1")
