@@ -19,11 +19,12 @@ use crate::handlers::cards::{fetch_account_for_update, normalize_amount};
 use crate::handlers::AppState;
 use crate::middleware::auth::{AuthenticatedCustomer, AuthenticatedService};
 use crate::models::interac::{
-    EtransferResponse, HandleResponse, RegisterAutodepositRequest, SendEtransferRequest,
+    ClaimEtransferRequest, EtransferResponse, HandleResponse, RegisterAutodepositRequest,
+    SendEtransferRequest,
 };
 use crate::rails::interac::{ensure_interac_accounts, normalize_handle, InteracRail};
 use crate::rails::{Destination, Rail};
-use crate::utils::password::hash_password;
+use crate::utils::password::{hash_password, verify_password};
 
 pub fn interac_routes() -> Router<AppState> {
     Router::new()
@@ -367,8 +368,141 @@ async fn load_etransfer_by_key(
 }
 async fn list_etransfers() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
 async fn get_etransfer() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
-async fn claim_etransfer() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
-async fn decline_etransfer() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
+
+/// Lock an available e-Transfer FOR UPDATE and return the fields we need, or the
+/// right error (404 unknown, 409 if no longer 'available').
+async fn lock_available(
+    tx: &mut crate::rails::PgTx<'_>,
+    id: Uuid,
+) -> Result<(Decimal, Uuid, Option<Uuid>, Option<String>, i32, String), AppError> {
+    let row = sqlx::query_as::<_, (String, Decimal, Option<Uuid>, Option<Uuid>, Option<String>, i32, String)>(
+        "SELECT status::text, amount, sender_account_id, recipient_customer_id, \
+         security_answer_hash, wrong_answer_attempts, \
+         COALESCE((SELECT reference_number FROM transactions WHERE transaction_id=hold_transaction_id),'') \
+         FROM interac_etransfers WHERE etransfer_id=$1 FOR UPDATE",
+    )
+    .bind(id).fetch_optional(&mut **tx).await?
+    .ok_or_else(|| AppError::NotFound("e-Transfer not found".into()))?;
+    if row.0 != "available" {
+        return Err(AppError::Conflict(format!("e-Transfer is {}", row.0)));
+    }
+    Ok((row.1, row.2.unwrap_or_default(), row.3, row.4, row.5, row.6))
+}
+
+async fn claim_etransfer(
+    State(state): State<AppState>,
+    caller: AuthenticatedCustomer,
+    Path(id): Path<Uuid>,
+    AxumJson(req): AxumJson<ClaimEtransferRequest>,
+) -> Result<(StatusCode, Json<EtransferResponse>), AppError> {
+    let rail = resolve_interac(&state).await?;
+    let mut tx = state.pool.begin().await?;
+    let (amount, sender_account, _rcpt, answer_hash, attempts, hold_ref) =
+        lock_available(&mut tx, id).await?;
+
+    // The deposit account must belong to the caller.
+    let owns: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM accounts WHERE account_id=$1 AND customer_id=$2)",
+    )
+    .bind(req.deposit_account_id)
+    .bind(caller.customer_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !owns {
+        return Err(AppError::NotFound("deposit account not found".into()));
+    }
+
+    // Verify the security answer (case-insensitive), 3-strike lock.
+    if let Some(hash) = &answer_hash {
+        if !verify_password(&req.security_answer.to_lowercase(), hash)? {
+            let n = attempts + 1;
+            if n >= 3 {
+                sqlx::query("UPDATE interac_etransfers SET status='failed', wrong_answer_attempts=$2, resolved_at=CURRENT_TIMESTAMP WHERE etransfer_id=$1")
+                    .bind(id).bind(n).execute(&mut *tx).await?;
+                tx.commit().await?;
+                return Err(AppError::Authorization(
+                    "too many incorrect answers; e-Transfer locked".into(),
+                ));
+            }
+            sqlx::query("UPDATE interac_etransfers SET wrong_answer_attempts=$2 WHERE etransfer_id=$1")
+                .bind(id).bind(n).execute(&mut *tx).await?;
+            tx.commit().await?;
+            return Err(AppError::BadRequest("incorrect security answer".into()));
+        }
+    }
+
+    let hold = crate::rails::Hold {
+        from_account: sender_account,
+        amount,
+        reference: hold_ref,
+        transaction_id: Uuid::nil(),
+    };
+    rail.release(
+        &state,
+        &mut tx,
+        &hold,
+        crate::rails::Destination::Internal(req.deposit_account_id),
+        "Interac e-Transfer claim",
+    )
+    .await?;
+    // Recipient was just credited; refresh its available_balance too.
+    recompute_available(&mut tx, req.deposit_account_id).await?;
+    mark_deposited(&mut tx, id, req.deposit_account_id).await?;
+    let handle: String =
+        sqlx::query_scalar("SELECT recipient_handle_value FROM interac_etransfers WHERE etransfer_id=$1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+    notify(
+        &mut tx,
+        id,
+        &handle,
+        "deposit_completed",
+        &format!("${amount} deposited"),
+        None,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok((StatusCode::OK, Json(load_etransfer(&state, id).await?)))
+}
+
+async fn decline_etransfer(
+    State(state): State<AppState>,
+    _caller: AuthenticatedCustomer,
+    Path(id): Path<Uuid>,
+) -> Result<(StatusCode, Json<EtransferResponse>), AppError> {
+    let rail = resolve_interac(&state).await?;
+    let mut tx = state.pool.begin().await?;
+    let (amount, sender_account, _r, _h, _a, hold_ref) = lock_available(&mut tx, id).await?;
+    let hold = crate::rails::Hold {
+        from_account: sender_account,
+        amount,
+        reference: hold_ref,
+        transaction_id: Uuid::nil(),
+    };
+    rail.refund(&state, &mut tx, &hold, "Interac e-Transfer declined").await?;
+    // Sender was just credited back (refund); refresh its available_balance too.
+    recompute_available(&mut tx, sender_account).await?;
+    sqlx::query("UPDATE interac_etransfers SET status='declined', resolved_at=CURRENT_TIMESTAMP WHERE etransfer_id=$1")
+        .bind(id).execute(&mut *tx).await?;
+    let handle: String =
+        sqlx::query_scalar("SELECT recipient_handle_value FROM interac_etransfers WHERE etransfer_id=$1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+    notify(
+        &mut tx,
+        id,
+        &handle,
+        "declined",
+        &format!("${amount} was declined and returned"),
+        None,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok((StatusCode::OK, Json(load_etransfer(&state, id).await?)))
+}
+
 async fn cancel_etransfer() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
 async fn register_autodeposit(
     State(state): State<AppState>,
