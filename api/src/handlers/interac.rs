@@ -22,7 +22,7 @@ use crate::handlers::AppState;
 use crate::middleware::auth::{AuthenticatedCustomer, AuthenticatedService};
 use crate::models::interac::{
     ClaimEtransferRequest, EtransferResponse, HandleResponse, InboundEtransferRequest,
-    RegisterAutodepositRequest, SendEtransferRequest,
+    RegisterAutodepositRequest, SendEtransferRequest, SettleEtransferRequest,
 };
 use crate::rails::interac::{ensure_interac_accounts, normalize_handle, InteracRail};
 use crate::rails::{Destination, Rail};
@@ -726,5 +726,55 @@ async fn insert_inbound(
     Ok(id)
 }
 
-async fn network_settle() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
+async fn network_settle(
+    State(state): State<AppState>,
+    _svc: AuthenticatedService,
+    Path(id): Path<Uuid>,
+    AxumJson(req): AxumJson<SettleEtransferRequest>,
+) -> Result<(StatusCode, Json<EtransferResponse>), AppError> {
+    let rail = resolve_interac(&state).await?;
+    let mut tx = state.pool.begin().await?;
+
+    // Must be an outbound, external, still-available transfer.
+    let row = sqlx::query_as::<_, (String, String, Decimal, Option<Uuid>, Option<Uuid>, String)>(
+        "SELECT status::text, direction::text, amount, sender_account_id, recipient_customer_id, \
+         COALESCE((SELECT reference_number FROM transactions WHERE transaction_id=hold_transaction_id),'') \
+         FROM interac_etransfers WHERE etransfer_id=$1 FOR UPDATE")
+        .bind(id).fetch_optional(&mut *tx).await?
+        .ok_or_else(|| AppError::NotFound("e-Transfer not found".into()))?;
+    if row.0 != "available" { return Err(AppError::Conflict(format!("e-Transfer is {}", row.0))); }
+    if row.1 != "outbound" || row.4.is_some() {
+        return Err(AppError::BadRequest("not an external outbound transfer".into()));
+    }
+    let hold = crate::rails::Hold {
+        from_account: row.3.ok_or_else(|| AppError::Internal("missing sender account".into()))?,
+        amount: row.2, reference: row.5, transaction_id: Uuid::nil(),
+    };
+
+    let (new_status, handle_kind, msg) = match req.outcome.as_str() {
+        "claimed" => {
+            rail.release(&state, &mut tx, &hold, crate::rails::Destination::External(req.institution.clone()),
+                "Interac e-Transfer settled to external bank").await?;
+            sqlx::query("UPDATE interac_etransfers SET status='deposited', counterparty_institution=$2, resolved_at=CURRENT_TIMESTAMP WHERE etransfer_id=$1")
+                .bind(id).bind(&req.institution).execute(&mut *tx).await?;
+            ("deposited", "deposit_completed", "deposited at the recipient's bank")
+        }
+        "declined" => {
+            rail.refund(&state, &mut tx, &hold, "Interac e-Transfer declined by network").await?;
+            sqlx::query("UPDATE interac_etransfers SET status='declined', resolved_at=CURRENT_TIMESTAMP WHERE etransfer_id=$1")
+                .bind(id).execute(&mut *tx).await?;
+            // Sender was just credited back (refund); refresh its available_balance too.
+            recompute_available(&mut tx, hold.from_account).await?;
+            ("declined", "declined", "declined and returned")
+        }
+        other => return Err(AppError::BadRequest(format!("unknown outcome '{other}'"))),
+    };
+
+    let handle: String = sqlx::query_scalar("SELECT recipient_handle_value FROM interac_etransfers WHERE etransfer_id=$1")
+        .bind(id).fetch_one(&mut *tx).await?;
+    notify(&mut tx, id, &handle, handle_kind, &format!("Your e-Transfer was {msg}"), None).await?;
+    let _ = new_status;
+    tx.commit().await?;
+    Ok((StatusCode::OK, Json(load_etransfer(&state, id).await?)))
+}
 async fn sweep_expired() -> Result<StatusCode, AppError> { Err(AppError::Internal("todo".into())) }
