@@ -1,0 +1,33 @@
+meta {
+  name: Register Agent
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/agents
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "display_name": "Jane's Assistant",
+    "description": "Personal AI assistant demo"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("agentId", res.body.agent_id);
+  bru.setEnvVar("agentSecret", res.body.agent_secret);
+}
+
+docs {
+  Open self-registration; confers ZERO access (a customer mandate is the gate).
+  The agent_secret is returned exactly once — this saves it to the environment.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

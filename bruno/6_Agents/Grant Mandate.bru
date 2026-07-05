@@ -1,0 +1,36 @@
+meta {
+  name: Grant Mandate
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/mandates
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "agent_id": "{{agentId}}",
+    "account_id": "{{chequingId}}",
+    "scopes": ["read:balance", "read:transactions"],
+    "expires_at": "2027-01-01T00:00:00Z"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("mandateId", res.body.mandate_id);
+}
+
+docs {
+  THE CONSENT ACT — authenticated as the account owner (run 2_Customers
+  Create + Login and 5_Transactions Open Chequing first). Scopes may also
+  include transfer:initiate, which then requires max_per_tx and daily_cap
+  (enforced by Phase 2). A non-owned account returns 404.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

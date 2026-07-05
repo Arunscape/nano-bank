@@ -1,0 +1,35 @@
+meta {
+  name: Agent Token
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/agent-token
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "agent_id": "{{agentId}}",
+    "agent_secret": "{{agentSecret}}",
+    "mandate_id": "{{mandateId}}"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("agentAccessToken", res.body.access_token);
+}
+
+docs {
+  Client-credentials: the agent authenticates itself and names the mandate it
+  wants to act under. The minted JWT is a short-lived (5 min) POINTER — scopes
+  and limits stay in the mandate row, re-read on every request, so revocation
+  needs no blocklist.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

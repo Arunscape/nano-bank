@@ -1,0 +1,26 @@
+meta {
+  name: Agent Balance
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/v1/agent/account
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{agentAccessToken}}
+}
+
+docs {
+  Balance snapshot of the mandated account. Note: no account id anywhere in
+  the request — the mandate pins the account (no confused deputy). Requires
+  scope read:balance; a missing scope is a 403 POLICY_DENIED and the denial
+  is audited in agent_actions.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -1,0 +1,20 @@
+meta {
+  name: Get Agent
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/v1/agents/{{agentId}}
+  auth: none
+}
+
+docs {
+  Public metadata (name, kind, status) so a user can inspect an agent before
+  consenting. Never exposes the secret.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

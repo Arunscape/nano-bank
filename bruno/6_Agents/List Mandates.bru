@@ -1,0 +1,20 @@
+meta {
+  name: List Mandates
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/v1/mandates
+  auth: inherit
+}
+
+docs {
+  The caller's own mandates, all statuses, newest first — including daily_used
+  velocity and revoked_at.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Revoke Mandate
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/mandates/{{mandateId}}
+  body: none
+  auth: inherit
+}
+
+docs {
+  Customer revokes the grant: 204, and the agent token minted above dies on
+  its very NEXT request (401 MANDATE_INACTIVE) — re-run Agent Balance to see
+  it. A second revoke returns 409 (guarded status flip).
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

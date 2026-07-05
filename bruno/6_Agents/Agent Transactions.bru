@@ -1,0 +1,28 @@
+meta {
+  name: Agent Transactions
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/v1/agent/transactions?limit=10
+  auth: bearer
+}
+
+params:query {
+  limit: 10
+}
+
+auth:bearer {
+  token: {{agentAccessToken}}
+}
+
+docs {
+  History of the mandated account (scope read:transactions). Any
+  ?account_id=... supplied by the agent is ignored — the mandate decides.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -336,3 +336,95 @@ Accept: application/json
 Authorization: Bearer {{txnToken}}
 
 ###
+
+# ═════════════════════════════════════════════════════════════
+# AGENTIC BANKING: register agent → grant mandate → agent token →
+# mandated reads → revoke. Reuses the txn customer + account A above.
+# The agent token is a POINTER to the mandate — scopes/limits live in the
+# mandate row, so revoking it (last step) kills the token immediately.
+# ═════════════════════════════════════════════════════════════
+
+# Register an agent (open; confers zero access). SAVE THE SECRET — it is
+# returned exactly once.
+# @name agentReg
+POST {{baseUrl}}/api/v1/agents
+Content-Type: application/json
+
+{
+    "display_name": "Jane's Assistant",
+    "description": "Personal AI assistant demo"
+}
+
+###
+
+@agentId = {{agentReg.response.body.agent_id}}
+@agentSecret = {{agentReg.response.body.agent_secret}}
+
+# Inspect the agent's public metadata (what a user sees before consenting)
+GET {{baseUrl}}/api/v1/agents/{{agentId}}
+Accept: application/json
+
+###
+
+# Grant a mandate — THE CONSENT ACT (customer token; account must be yours).
+# Scopes: read:balance, read:transactions, transfer:initiate (the last one
+# requires max_per_tx + daily_cap and is enforced in Phase 2).
+# @name mandate
+POST {{baseUrl}}/api/v1/mandates
+Content-Type: application/json
+Authorization: Bearer {{txnToken}}
+
+{
+    "agent_id": "{{agentId}}",
+    "account_id": "{{acctA.response.body.account_id}}",
+    "scopes": ["read:balance", "read:transactions"],
+    "expires_at": "2027-01-01T00:00:00Z"
+}
+
+###
+
+@mandateId = {{mandate.response.body.mandate_id}}
+
+# List your mandates (all statuses)
+GET {{baseUrl}}/api/v1/mandates
+Accept: application/json
+Authorization: Bearer {{txnToken}}
+
+###
+
+# The agent exchanges its credentials + the mandate for a short-lived token
+# @name agentToken
+POST {{baseUrl}}/api/v1/auth/agent-token
+Content-Type: application/json
+
+{
+    "agent_id": "{{agentId}}",
+    "agent_secret": "{{agentSecret}}",
+    "mandate_id": "{{mandateId}}"
+}
+
+###
+
+@agentAccess = {{agentToken.response.body.access_token}}
+
+# Mandated balance read — note: NO account id anywhere; the mandate pins it
+GET {{baseUrl}}/api/v1/agent/account
+Accept: application/json
+Authorization: Bearer {{agentAccess}}
+
+###
+
+# Mandated history read (same pinning; ?account_id=... would be ignored)
+GET {{baseUrl}}/api/v1/agent/transactions?limit=10
+Accept: application/json
+Authorization: Bearer {{agentAccess}}
+
+###
+
+# Revoke the mandate. Returns 204; the agent token above stops working on its
+# very NEXT request (401 MANDATE_INACTIVE) — re-run the reads to see it.
+# A second revoke returns 409.
+DELETE {{baseUrl}}/api/v1/mandates/{{mandateId}}
+Authorization: Bearer {{txnToken}}
+
+###
