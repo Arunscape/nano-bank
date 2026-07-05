@@ -18,17 +18,21 @@ DB_PORT="${DB_PORT:-5432}"
 VIEWER_PORT="${VIEWER_PORT:-8504}"
 VISA_INTERVAL_SECONDS="${VISA_INTERVAL_SECONDS:-2}"
 SETTLE_INTERVAL_SECONDS="${SETTLE_INTERVAL_SECONDS:-30}"
-# Secret the visa simulator presents to mint a network service token. Must match
-# the API's security.service_client_secret (config/default.toml).
+INTERAC_INTERVAL_SECONDS="${INTERAC_INTERVAL_SECONDS:-5}"
+INTERAC_INBOUND_PROB="${INTERAC_INBOUND_PROB:-0.3}"
+INTERAC_DECLINE_PROB="${INTERAC_DECLINE_PROB:-0.15}"
+# Secret the visa/interac simulators present to mint a network service token.
+# Must match the API's security.service_client_secret (config/default.toml).
 SERVICE_CLIENT_SECRET="${SERVICE_CLIENT_SECRET:-nano-bank-visa-network-secret-change-me}"
 
 echo "🔨 Building images …"
 podman build -t localhost/nano-bank-viewer:latest    viewer
 podman build -t localhost/nano-bank-generator:latest generator
 podman build -t localhost/nano-bank-visa:latest      visa
+podman build -t localhost/nano-bank-interac:latest   interac
 
 echo "🧹 Removing any existing containers …"
-podman rm -f nano-bank-viewer nano-bank-generator nano-bank-visa >/dev/null 2>&1 || true
+podman rm -f nano-bank-viewer nano-bank-generator nano-bank-visa nano-bank-interac >/dev/null 2>&1 || true
 
 echo "📊 Starting viewer on http://localhost:${VIEWER_PORT} …"
 podman run -d --name nano-bank-viewer \
@@ -54,9 +58,21 @@ podman run -d --name nano-bank-visa \
   -e SETTLE_INTERVAL_SECONDS="$SETTLE_INTERVAL_SECONDS" \
   localhost/nano-bank-visa:latest
 
+echo "📨 Starting Interac network simulator (poll every ${INTERAC_INTERVAL_SECONDS}s, inbound_prob=${INTERAC_INBOUND_PROB}) …"
+podman run -d --name nano-bank-interac \
+  --network=host --restart unless-stopped \
+  -e API_BASE_URL="$API_BASE_URL" \
+  -e SERVICE_CLIENT_SECRET="$SERVICE_CLIENT_SECRET" \
+  -e DB_HOST="$DB_HOST" -e DB_PORT="$DB_PORT" \
+  -e INTERVAL_SECONDS="$INTERAC_INTERVAL_SECONDS" \
+  -e INBOUND_PROB="$INTERAC_INBOUND_PROB" \
+  -e DECLINE_PROB="$INTERAC_DECLINE_PROB" \
+  localhost/nano-bank-interac:latest
+
 echo ""
 echo "✅ Up. Viewer: http://localhost:${VIEWER_PORT}"
 echo "   Logs:  podman logs -f nano-bank-generator"
 echo "          podman logs -f nano-bank-visa"
+echo "          podman logs -f nano-bank-interac"
 echo "          podman logs -f nano-bank-viewer"
 echo "   Stop:  ./stop-testing.sh"
