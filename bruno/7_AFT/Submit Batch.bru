@@ -1,0 +1,15 @@
+meta {
+  name: Submit Batch
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/v1/aft/batches/{{aftBatchId}}/submit
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {}
+}

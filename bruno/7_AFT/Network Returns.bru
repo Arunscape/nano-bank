@@ -1,0 +1,21 @@
+meta {
+  name: Network Returns
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/api/v1/aft/network/returns
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
+}
+
+body:json {
+  {
+    "file": "H900       2026186000001\nC000000500000300050000000007777Returned                      NANO2026186NSF \nT00000100000050000000000000"
+  }
+}
