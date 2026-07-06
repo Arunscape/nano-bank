@@ -28,12 +28,14 @@
 //! accounts belong to the card rails.
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
     routing::{get, post},
     Router,
 };
+use std::collections::HashMap;
+
 use rust_decimal::Decimal;
 use serde_json::json;
 use sqlx::{Postgres, QueryBuilder};
@@ -51,8 +53,9 @@ use crate::ledger::Account as GlAccount;
 use crate::middleware::auth::AuthenticatedCustomer;
 use crate::models::account::{Account, AccountStatus, AccountType};
 use crate::models::transaction::{
-    DepositRequest, MoneyTransferRequest, Transaction, TransactionEntry, TransactionEntryResponse,
-    TransactionHistoryQuery, TransactionHistoryResponse, TransactionResponse, WithdrawalRequest,
+    DepositRequest, MoneyTransferRequest, ReverseRequest, Transaction, TransactionEntry,
+    TransactionEntryResponse, TransactionHistoryQuery, TransactionHistoryResponse,
+    TransactionResponse, WithdrawalRequest,
 };
 
 const CASH_CUSTOMER_EMAIL: &str = "cash@nano.bank";
@@ -61,12 +64,19 @@ const CASH_ACCOUNT_TYPE: &str = "chequing";
 
 const DEFAULT_HISTORY_LIMIT: u32 = 50;
 
+/// Flat fee charged on an outbound transfer (placeholder schedule).
+fn transfer_fee() -> Decimal {
+    Decimal::new(150, 2) // $1.50
+}
+
 pub fn transaction_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(get_transactions))
         .route("/transfer", post(transfer_money))
         .route("/deposit", post(deposit_money))
         .route("/withdrawal", post(withdraw_money))
+        .route("/:id", get(get_transaction))
+        .route("/:id/reverse", post(reverse_transaction))
 }
 
 // ---------------------------------------------------------------------------
@@ -141,18 +151,18 @@ async fn deposit_money(
 
     let mut tx = state.pool.begin().await?;
 
-    let account = fetch_account_for_update(&mut tx, req.account_id)
-        .await?
+    // Lock the customer account and the cash counterparty in a deadlock-safe
+    // order (cash last — see [`lock_accounts_cash_last`]).
+    let locked = lock_accounts_cash_last(&mut tx, &[req.account_id, cash_id], cash_id).await?;
+    let account = locked
+        .get(&req.account_id)
         .ok_or_else(|| AppError::NotFound("account not found".to_string()))?;
     // Ownership: derive the actor from the token, not the request. Don't reveal
     // another customer's account exists — 404, not 403 (mirrors accounts.rs).
     if account.customer_id != auth.customer_id {
         return Err(AppError::NotFound("account not found".to_string()));
     }
-    ensure_operable(&account)?;
-
-    // Lock the counterparty too (customer first, then cash) for a stable order.
-    let _cash = fetch_account_for_update(&mut tx, cash_id).await?;
+    ensure_operable(account)?;
 
     let reference = reference_number("DEP");
     let txn_id = insert_transaction(
@@ -167,33 +177,24 @@ async fn deposit_money(
     )
     .await?;
 
-    // customer *credit* (+balance); EXTERNAL_CASH *debit*.
-    post_two_legged(
+    // customer *credit* (+balance); EXTERNAL_CASH *debit*. GL of record: bank
+    // cash up, customer-deposit liability up.
+    post_movement(
+        &state,
         &mut tx,
         txn_id,
-        account.account_id,
-        "credit",
         cash_id,
-        "debit",
+        account.account_id,
         amount,
+        cash_id,
+        Some(GlSpec {
+            debit: GlAccount::Bank,
+            credit: GlAccount::Payable,
+            reference: &reference,
+            description: &req.description,
+        }),
     )
     .await?;
-
-    let new_balance = account_balance(&mut tx, account.account_id).await?;
-    recompute_available(&mut tx, account.account_id).await?;
-    record_summary(&mut tx, account.account_id, "credit", amount, new_balance).await?;
-
-    // GL of record: bank cash up, customer-deposit liability up.
-    let gl = post_gl_entry(
-        &state,
-        &reference,
-        &req.description,
-        GlAccount::Bank,
-        GlAccount::Payable,
-        amount,
-    )
-    .await?;
-    tag_gl_entry(&mut tx, txn_id, &format!("{}:{}", gl.backend, gl.id)).await?;
 
     tx.commit().await?;
 
@@ -220,14 +221,16 @@ async fn withdraw_money(
 
     let mut tx = state.pool.begin().await?;
 
-    let account = fetch_account_for_update(&mut tx, req.account_id)
-        .await?
+    // Lock the customer account and the cash counterparty (cash last).
+    let locked = lock_accounts_cash_last(&mut tx, &[req.account_id, cash_id], cash_id).await?;
+    let account = locked
+        .get(&req.account_id)
         .ok_or_else(|| AppError::NotFound("account not found".to_string()))?;
     // Ownership: only the account holder may withdraw. 404 to avoid leaking existence.
     if account.customer_id != auth.customer_id {
         return Err(AppError::NotFound("account not found".to_string()));
     }
-    ensure_operable(&account)?;
+    ensure_operable(account)?;
 
     if account.available_balance < amount {
         return Err(AppError::InsufficientFunds);
@@ -238,8 +241,6 @@ async fn withdraw_money(
     if limits.daily_withdrawal_used + amount > limits.daily_withdrawal_limit {
         return Err(AppError::TransactionLimitExceeded);
     }
-
-    let _cash = fetch_account_for_update(&mut tx, cash_id).await?;
 
     let reference = reference_number("WTH");
     let txn_id = insert_transaction(
@@ -254,22 +255,24 @@ async fn withdraw_money(
     )
     .await?;
 
-    // customer *debit* (−balance); EXTERNAL_CASH *credit*.
-    set_available_zero(&mut tx, account.account_id).await?;
-    post_two_legged(
+    // customer *debit* (−balance); EXTERNAL_CASH *credit*. GL: customer-deposit
+    // liability down, bank cash down.
+    post_movement(
+        &state,
         &mut tx,
         txn_id,
         account.account_id,
-        "debit",
         cash_id,
-        "credit",
         amount,
+        cash_id,
+        Some(GlSpec {
+            debit: GlAccount::Payable,
+            credit: GlAccount::Bank,
+            reference: &reference,
+            description: &req.description,
+        }),
     )
     .await?;
-
-    let new_balance = account_balance(&mut tx, account.account_id).await?;
-    recompute_available(&mut tx, account.account_id).await?;
-    record_summary(&mut tx, account.account_id, "debit", amount, new_balance).await?;
 
     sqlx::query(
         "UPDATE account_limits SET daily_withdrawal_used = daily_withdrawal_used + $2, \
@@ -279,17 +282,6 @@ async fn withdraw_money(
     .bind(amount)
     .execute(&mut *tx)
     .await?;
-
-    let gl = post_gl_entry(
-        &state,
-        &reference,
-        &req.description,
-        GlAccount::Payable,
-        GlAccount::Bank,
-        amount,
-    )
-    .await?;
-    tag_gl_entry(&mut tx, txn_id, &format!("{}:{}", gl.backend, gl.id)).await?;
 
     tx.commit().await?;
 
@@ -330,22 +322,24 @@ async fn transfer_money(
         }
     }
 
+    let fee = transfer_fee();
+    let cash_id = ensure_external_cash_account(&state.pool).await?;
+
     let mut tx = state.pool.begin().await?;
 
-    // Lock both accounts in a deterministic order (by id) to avoid deadlocks.
-    let (first, second) = if req.from_account_id < req.to_account_id {
-        (req.from_account_id, req.to_account_id)
-    } else {
-        (req.to_account_id, req.from_account_id)
-    };
-    fetch_account_for_update(&mut tx, first).await?;
-    fetch_account_for_update(&mut tx, second).await?;
-
-    let from = fetch_account_for_update(&mut tx, req.from_account_id)
-        .await?
+    // Lock both customer accounts (id-sorted) and the fee counterparty
+    // (EXTERNAL_CASH) last — see [`lock_accounts_cash_last`].
+    let locked = lock_accounts_cash_last(
+        &mut tx,
+        &[req.from_account_id, req.to_account_id, cash_id],
+        cash_id,
+    )
+    .await?;
+    let from = locked
+        .get(&req.from_account_id)
         .ok_or_else(|| AppError::NotFound("from account not found".to_string()))?;
-    let to = fetch_account_for_update(&mut tx, req.to_account_id)
-        .await?
+    let to = locked
+        .get(&req.to_account_id)
         .ok_or_else(|| AppError::NotFound("to account not found".to_string()))?;
 
     // Ownership: the caller may only move money out of their own account. The
@@ -355,10 +349,11 @@ async fn transfer_money(
         return Err(AppError::NotFound("from account not found".to_string()));
     }
 
-    ensure_operable(&from)?;
-    ensure_operable(&to)?;
+    ensure_operable(from)?;
+    ensure_operable(to)?;
 
-    if from.available_balance < amount {
+    // The funding account must cover the amount *and* the fee.
+    if from.available_balance < amount + fee {
         return Err(AppError::InsufficientFunds);
     }
 
@@ -388,25 +383,66 @@ async fn transfer_money(
     )
     .await?;
 
-    // from *debit* (−balance); to *credit* (+balance).
-    set_available_zero(&mut tx, from.account_id).await?;
-    post_two_legged(
+    // from *debit* (−balance); to *credit* (+balance). Local-only: both accounts
+    // map to the same `Payable` GL role, so the aggregate effect nets to zero.
+    post_movement(
+        &state,
         &mut tx,
         txn_id,
         from.account_id,
-        "debit",
         to.account_id,
-        "credit",
         amount,
+        cash_id,
+        None,
     )
     .await?;
 
-    let from_balance = account_balance(&mut tx, from.account_id).await?;
-    let to_balance = account_balance(&mut tx, to.account_id).await?;
-    recompute_available(&mut tx, from.account_id).await?;
-    recompute_available(&mut tx, to.account_id).await?;
-    record_summary(&mut tx, from.account_id, "debit", amount, from_balance).await?;
-    record_summary(&mut tx, to.account_id, "credit", amount, to_balance).await?;
+    // Transfer fee: a separate `fee` transaction, funding account → EXTERNAL_CASH,
+    // with the fee recognised as Revenue at the GL. The idempotent early-return
+    // above covers only *sequential* replays; with no unique index a tightly
+    // concurrent same-key duplicate could still post both the transfer and this
+    // fee (deferred idempotency hardening — backlog §8.D).
+    if fee > Decimal::ZERO {
+        let fee_ref = reference_number("FEE");
+        let fee_txn = insert_transaction(
+            &mut tx,
+            &fee_ref,
+            "fee",
+            fee,
+            &format!("transfer fee for {}", reference),
+            from.customer_id,
+            None,
+            json!({ "fee_for": txn_id }),
+        )
+        .await?;
+        post_movement(
+            &state,
+            &mut tx,
+            fee_txn,
+            from.account_id,
+            cash_id,
+            fee,
+            cash_id,
+            Some(GlSpec {
+                debit: GlAccount::Payable,
+                credit: GlAccount::Revenue,
+                reference: &fee_ref,
+                description: "transfer fee",
+            }),
+        )
+        .await?;
+        // The fee row links to the *transfer* (the fee-bearing txn), while the
+        // fee's own legs/GL live under `fee_txn` (`metadata.fee_for` links back).
+        // That asymmetry is intentional.
+        sqlx::query(
+            "INSERT INTO transaction_fees (transaction_id, fee_type, fee_amount) \
+             VALUES ($1, 'transfer', $2)",
+        )
+        .bind(txn_id)
+        .bind(fee)
+        .execute(&mut *tx)
+        .await?;
+    }
 
     sqlx::query(
         "UPDATE account_limits SET \
@@ -427,6 +463,189 @@ async fn transfer_money(
         "🔁 transfer posted"
     );
     let resp = load_transaction_response(&state.pool, txn_id).await?;
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+// ---------------------------------------------------------------------------
+// single fetch
+// ---------------------------------------------------------------------------
+
+/// Fetch one transaction the caller is party to (has a leg on one of their
+/// accounts). 404 otherwise, so a stranger's transaction is indistinguishable
+/// from a missing one.
+async fn get_transaction(
+    State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
+    Path(txn_id): Path<Uuid>,
+) -> Result<Json<TransactionResponse>, AppError> {
+    let involved: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM transaction_entries e \
+         JOIN accounts a ON a.account_id = e.account_id \
+         WHERE e.transaction_id = $1 AND a.customer_id = $2)",
+    )
+    .bind(txn_id)
+    .bind(auth.customer_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    if !involved {
+        return Err(AppError::NotFound("transaction not found".to_string()));
+    }
+    let resp = load_transaction_response(&state.pool, txn_id).await?;
+    Ok(Json(resp))
+}
+
+// ---------------------------------------------------------------------------
+// reversal
+// ---------------------------------------------------------------------------
+
+/// Reverse a completed deposit/withdrawal/transfer by posting its mirror. Only
+/// the initiator may reverse it. v1: rejects rather than forcing a negative
+/// clawback, does not refund a transfer fee, and does not restore the
+/// `account_limits` counters the original consumed.
+async fn reverse_transaction(
+    State(state): State<AppState>,
+    auth: AuthenticatedCustomer,
+    Path(txn_id): Path<Uuid>,
+    Json(req): Json<ReverseRequest>,
+) -> Result<(StatusCode, Json<TransactionResponse>), AppError> {
+    req.validate()?;
+    let reason = req
+        .reason
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or_else(|| "customer reversal".to_string());
+
+    // Load the original. Initiator-only; 404 (not 403) so we don't leak existence.
+    let original: Option<(String, String, Option<Uuid>, Decimal)> = sqlx::query_as(
+        "SELECT transaction_type, status::text, initiated_by, amount \
+         FROM transactions WHERE transaction_id = $1",
+    )
+    .bind(txn_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let (otype, ostatus, initiated_by, amount) =
+        original.ok_or_else(|| AppError::NotFound("transaction not found".to_string()))?;
+    if initiated_by != Some(auth.customer_id) {
+        return Err(AppError::NotFound("transaction not found".to_string()));
+    }
+    if ostatus != "completed" {
+        return Err(AppError::BadRequest(
+            "only a completed transaction can be reversed".to_string(),
+        ));
+    }
+    if !matches!(otype.as_str(), "deposit" | "withdrawal" | "transfer") {
+        return Err(AppError::BadRequest(
+            "this transaction type cannot be reversed".to_string(),
+        ));
+    }
+
+    // The reversal swaps the original legs.
+    let legs: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT account_id, entry_type::text FROM transaction_entries WHERE transaction_id = $1",
+    )
+    .bind(txn_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let orig_debit = legs.iter().find(|(_, t)| t == "debit").map(|(a, _)| *a);
+    let orig_credit = legs.iter().find(|(_, t)| t == "credit").map(|(a, _)| *a);
+    let (Some(orig_debit), Some(orig_credit)) = (orig_debit, orig_credit) else {
+        return Err(AppError::BadRequest(
+            "transaction has no reversible legs".to_string(),
+        ));
+    };
+    let rev_debit = orig_credit; // debit what was credited …
+    let rev_credit = orig_debit; // … credit what was debited
+
+    let cash_id = ensure_external_cash_account(&state.pool).await?;
+
+    let mut tx = state.pool.begin().await?;
+
+    // Lock the reversal's customer account(s) first (id-sorted), EXTERNAL_CASH
+    // last — see [`lock_accounts_cash_last`]. Cash is locked only when a leg is
+    // cash, reproducing the deposit/withdrawal/fee ordering exactly.
+    let locked = lock_accounts_cash_last(&mut tx, &[rev_debit, rev_credit], cash_id).await?;
+
+    // Guarded status transition: the first reverser wins; a concurrent second
+    // sees 0 rows updated and gets a 409 — no double clawback.
+    let marked = sqlx::query(
+        "UPDATE transactions SET status = 'reversed' \
+         WHERE transaction_id = $1 AND status = 'completed'",
+    )
+    .bind(txn_id)
+    .execute(&mut *tx)
+    .await?;
+    if marked.rows_affected() != 1 {
+        return Err(AppError::Conflict(
+            "transaction has already been reversed".to_string(),
+        ));
+    }
+
+    // Funds check only on a *customer* debit — EXTERNAL_CASH carries a 1e12
+    // overdraft and is allowed to run negative. Reuse the already-locked row.
+    if rev_debit != cash_id {
+        let debit_acct = locked
+            .get(&rev_debit)
+            .ok_or_else(|| AppError::NotFound("account not found".to_string()))?;
+        if debit_acct.available_balance < amount {
+            return Err(AppError::InsufficientFunds);
+        }
+    }
+
+    let reference = reference_number("REV");
+    let rev_txn = insert_transaction(
+        &mut tx,
+        &reference,
+        "reversal",
+        amount,
+        &format!("reversal of {txn_id}: {reason}"),
+        auth.customer_id,
+        Some(&txn_id.to_string()),
+        json!({ "reverses": txn_id }),
+    )
+    .await?;
+
+    // Reverse the GL by original type (a transfer posted none, so nothing to undo).
+    let gl = match otype.as_str() {
+        "deposit" => Some(GlSpec {
+            debit: GlAccount::Payable,
+            credit: GlAccount::Bank,
+            reference: &reference,
+            description: &reason,
+        }),
+        "withdrawal" => Some(GlSpec {
+            debit: GlAccount::Bank,
+            credit: GlAccount::Payable,
+            reference: &reference,
+            description: &reason,
+        }),
+        _ => None,
+    };
+
+    // Post the swapped legs (+ optional GL undo).
+    post_movement(
+        &state, &mut tx, rev_txn, rev_debit, rev_credit, amount, cash_id, gl,
+    )
+    .await?;
+
+    // Cross-link the reversal to the original.
+    sqlx::query(
+        "INSERT INTO transaction_reversals \
+         (original_transaction_id, reversal_transaction_id, reason, authorized_by) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(txn_id)
+    .bind(rev_txn)
+    .bind(&reason)
+    .bind(auth.customer_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    tracing::info!(original = %txn_id, reversal = %rev_txn, amount = %amount, "↩️  transaction reversed");
+    let resp = load_transaction_response(&state.pool, rev_txn).await?;
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
@@ -558,6 +777,98 @@ fn ensure_operable(account: &Account) -> Result<(), AppError> {
         AccountStatus::Frozen => Err(AppError::AccountFrozen),
         _ => Err(AppError::InvalidAccountStatus),
     }
+}
+
+/// Lock accounts in the globally consistent order that prevents deadlocks:
+/// customer account(s) first (id-sorted), then EXTERNAL_CASH **last**.
+///
+/// deposit/withdrawal and the transfer-fee path all lock cash last, so every
+/// path touching the same accounts must too — sorting purely by id could
+/// otherwise lock cash before a customer account (when `cash_id` sorts lower)
+/// and deadlock a concurrent deposit/withdrawal.
+///
+/// `ids` is deduped; `cash_id` is locked last, and only if it appeared in `ids`.
+/// Returns the rows found, keyed by account id — a caller turns a missing key
+/// into its own error (404 etc.).
+async fn lock_accounts_cash_last(
+    tx: &mut Tx<'_>,
+    ids: &[Uuid],
+    cash_id: Uuid,
+) -> Result<HashMap<Uuid, Account>, sqlx::Error> {
+    let lock_cash = ids.contains(&cash_id);
+    let mut non_cash: Vec<Uuid> = ids.iter().copied().filter(|id| *id != cash_id).collect();
+    non_cash.sort_unstable();
+    non_cash.dedup();
+
+    let mut locked: HashMap<Uuid, Account> = HashMap::new();
+    for id in non_cash {
+        if let Some(acct) = fetch_account_for_update(tx, id).await? {
+            locked.insert(id, acct);
+        }
+    }
+    if lock_cash {
+        if let Some(acct) = fetch_account_for_update(tx, cash_id).await? {
+            locked.insert(cash_id, acct);
+        }
+    }
+    Ok(locked)
+}
+
+/// The optional general-ledger effect of a movement (see [`post_movement`]).
+struct GlSpec<'a> {
+    debit: GlAccount,
+    credit: GlAccount,
+    reference: &'a str,
+    description: &'a str,
+}
+
+/// Post both legs, floor/recompute available, summarise the customer account(s),
+/// and (optionally) dual-post + tag the GL — the shared choreography behind
+/// deposit/withdrawal/transfer/fee/reversal.
+///
+/// A customer **debit** transiently violates `chk_available_balance_logical`
+/// (the balance trigger lowers `balance` mid-INSERT), so its available is floored
+/// to 0 first and recomputed after; EXTERNAL_CASH is exempt (kept at
+/// `available_balance = 0`) and never recomputed/summarised. The GL post stays
+/// **inside the DB transaction, before commit** — the drift guarantee.
+#[allow(clippy::too_many_arguments)]
+async fn post_movement(
+    state: &AppState,
+    tx: &mut Tx<'_>,
+    txn_id: Uuid,
+    debit: Uuid,
+    credit: Uuid,
+    amount: Decimal,
+    cash_id: Uuid,
+    gl: Option<GlSpec<'_>>,
+) -> Result<(), AppError> {
+    if debit != cash_id {
+        set_available_zero(tx, debit).await?;
+    }
+    post_two_legged(tx, txn_id, debit, "debit", credit, "credit", amount).await?;
+
+    for (acct, entry) in [(debit, "debit"), (credit, "credit")] {
+        if acct == cash_id {
+            continue;
+        }
+        let bal = account_balance(tx, acct).await?;
+        recompute_available(tx, acct).await?;
+        record_summary(tx, acct, entry, amount, bal).await?;
+    }
+
+    if let Some(gl) = gl {
+        let posted = post_gl_entry(
+            state,
+            gl.reference,
+            gl.description,
+            gl.debit,
+            gl.credit,
+            amount,
+        )
+        .await?;
+        tag_gl_entry(tx, txn_id, &format!("{}:{}", posted.backend, posted.id)).await?;
+    }
+    Ok(())
 }
 
 // Groups the `transactions` INSERT columns; the arg count mirrors the row.

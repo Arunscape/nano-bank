@@ -111,6 +111,14 @@ pub struct WithdrawalRequest {
     pub external_reference: Option<String>,
 }
 
+// Reversal Request (reverse a completed transaction)
+#[derive(Debug, Serialize, Deserialize, Validate)]
+pub struct ReverseRequest {
+    #[validate(length(max = 255))]
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 // Transaction Reversal Entity
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct TransactionReversal {

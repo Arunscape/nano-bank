@@ -1,0 +1,26 @@
+meta {
+  name: Open Savings
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/accounts
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "account_type": "savings"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("savingsId", res.body.account_id);
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

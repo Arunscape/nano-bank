@@ -1,0 +1,20 @@
+meta {
+  name: Get Transaction
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/v1/transactions/{{depositTxnId}}
+  auth: inherit
+}
+
+docs {
+  Single transaction fetch (the deposit above). Returns 404 unless the caller is party
+  to it (has a leg on one of their accounts).
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

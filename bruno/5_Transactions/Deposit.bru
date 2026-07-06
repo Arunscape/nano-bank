@@ -1,0 +1,33 @@
+meta {
+  name: Deposit
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/transactions/deposit
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "account_id": "{{chequingId}}",
+    "amount": 1000.00,
+    "description": "Payday deposit"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("depositTxnId", res.body.transaction_id);
+}
+
+docs {
+  Customer credited, EXTERNAL_CASH debited; posts Dr Bank / Cr Payable to the GL core
+  (a core must be running). Saves the transaction_id for the Get Transaction / Reverse steps.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

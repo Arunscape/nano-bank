@@ -1,0 +1,33 @@
+meta {
+  name: Withdraw
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/transactions/withdrawal
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "account_id": "{{chequingId}}",
+    "amount": 100.00,
+    "description": "ATM withdrawal"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("withdrawalTxnId", res.body.transaction_id);
+}
+
+docs {
+  Customer debited, EXTERNAL_CASH credited; posts Dr Payable / Cr Bank to the GL.
+  Enforces the daily withdrawal limit. Saves the transaction_id for the Reverse step.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

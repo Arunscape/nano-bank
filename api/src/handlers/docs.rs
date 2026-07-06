@@ -94,6 +94,14 @@ pub async fn api_docs() -> Result<Html<String>, StatusCode> {
         <span class="method get">GET</span> <code>/api/v1/transactions</code><br>
         Get transaction history
     </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/transactions/{id}</code><br>
+        Get a single transaction
+    </div>
+    <div class="endpoint">
+        <span class="method post">POST</span> <code>/api/v1/transactions/{id}/reverse</code><br>
+        Reverse a completed transaction
+    </div>
 
     <h2>🔒 Security</h2>
     <div class="endpoint">

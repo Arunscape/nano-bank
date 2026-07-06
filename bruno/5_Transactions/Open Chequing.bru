@@ -1,0 +1,32 @@
+meta {
+  name: Open Chequing
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/accounts
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "account_type": "chequing"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("chequingId", res.body.account_id);
+}
+
+docs {
+  Transactions require a CUSTOMER token. Run 2_Customers → Create Customer + Login
+  first (they set {{accessToken}}), then run this folder top to bottom. The account
+  is opened for the logged-in customer — identity comes from the token, no customer_id.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

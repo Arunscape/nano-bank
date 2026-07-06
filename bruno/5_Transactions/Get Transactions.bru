@@ -1,0 +1,25 @@
+meta {
+  name: Get Transactions
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/api/v1/transactions?account_id={{chequingId}}&limit=20
+  auth: inherit
+}
+
+params:query {
+  account_id: {{chequingId}}
+  limit: 20
+}
+
+docs {
+  Transaction history, scoped to the caller's own account legs (newest first, entries
+  hydrated). The account_id filter narrows within that scope.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -210,9 +210,10 @@ Authorization: Bearer {{accessToken}}
 ###
 
 # ═════════════════════════════════════════════════════════════
-# TRANSACTIONS: deposit → transfer → withdrawal → history
-# Uses a fresh customer with two deposit accounts (chequing + savings).
-# Deposit/withdrawal post to the GL core — a core must be running.
+# TRANSACTIONS: deposit → transfer → withdrawal → reverse → history
+# A fresh customer with two deposit accounts. These endpoints require the
+# CUSTOMER token — identity comes from the token, not the body.
+# Deposit/withdrawal (and the transfer fee) post to the GL core — run a core.
 # ═════════════════════════════════════════════════════════════
 
 # @name txnCustomer
@@ -231,33 +232,48 @@ Content-Type: application/json
 
 ###
 
-# 11. Open chequing account A
-# @name acctA
-POST {{baseUrl}}/api/v1/accounts
+# @name txnLogin
+POST {{baseUrl}}/api/v1/auth/login
 Content-Type: application/json
 
 {
-    "customer_id": "{{txnCustomer.response.body.customer_id}}",
+    "email": "txn.demo@example.com",
+    "password": "securepass123"
+}
+
+###
+
+@txnToken = {{txnLogin.response.body.access_token}}
+
+# Open chequing account A (customer from the token — no customer_id in body)
+# @name acctA
+POST {{baseUrl}}/api/v1/accounts
+Content-Type: application/json
+Authorization: Bearer {{txnToken}}
+
+{
     "account_type": "chequing"
 }
 
 ###
 
-# 12. Open savings account B
+# Open savings account B
 # @name acctB
 POST {{baseUrl}}/api/v1/accounts
 Content-Type: application/json
+Authorization: Bearer {{txnToken}}
 
 {
-    "customer_id": "{{txnCustomer.response.body.customer_id}}",
     "account_type": "savings"
 }
 
 ###
 
-# 13. Deposit 1000 into A  (customer credit / EXTERNAL_CASH debit; GL: Bank↔Payable)
+# Deposit 1000 into A  (customer credit / EXTERNAL_CASH debit; GL: Bank↔Payable)
+# @name deposit
 POST {{baseUrl}}/api/v1/transactions/deposit
 Content-Type: application/json
+Authorization: Bearer {{txnToken}}
 
 {
     "account_id": "{{acctA.response.body.account_id}}",
@@ -267,9 +283,10 @@ Content-Type: application/json
 
 ###
 
-# 14. Transfer 400 from A to B  (local double-entry; no GL post)
+# Transfer 400 from A to B  (local double-entry; also charges a $1.50 fee)
 POST {{baseUrl}}/api/v1/transactions/transfer
 Content-Type: application/json
+Authorization: Bearer {{txnToken}}
 
 {
     "from_account_id": "{{acctA.response.body.account_id}}",
@@ -281,9 +298,10 @@ Content-Type: application/json
 
 ###
 
-# 15. Withdraw 100 from A  (GL: Payable↔Bank; daily limit enforced)
+# Withdraw 100 from A  (GL: Payable↔Bank; daily limit enforced)
 POST {{baseUrl}}/api/v1/transactions/withdrawal
 Content-Type: application/json
+Authorization: Bearer {{txnToken}}
 
 {
     "account_id": "{{acctA.response.body.account_id}}",
@@ -293,8 +311,28 @@ Content-Type: application/json
 
 ###
 
-# 16. Transaction history for account A (newest first, entries hydrated)
+# Get a single transaction (the deposit above) — 404 unless you're party to it
+GET {{baseUrl}}/api/v1/transactions/{{deposit.response.body.transaction_id}}
+Accept: application/json
+Authorization: Bearer {{txnToken}}
+
+###
+
+# Reverse the deposit — mirror-posts to claw it back, marks the original reversed.
+# Initiator-only; a second reverse of the same txn is rejected.
+POST {{baseUrl}}/api/v1/transactions/{{deposit.response.body.transaction_id}}/reverse
+Content-Type: application/json
+Authorization: Bearer {{txnToken}}
+
+{
+    "reason": "customer requested"
+}
+
+###
+
+# Transaction history for account A (newest first, entries hydrated)
 GET {{baseUrl}}/api/v1/transactions?account_id={{acctA.response.body.account_id}}&limit=20
 Accept: application/json
+Authorization: Bearer {{txnToken}}
 
 ###

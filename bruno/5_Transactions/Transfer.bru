@@ -1,0 +1,33 @@
+meta {
+  name: Transfer
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/transactions/transfer
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "from_account_id": "{{chequingId}}",
+    "to_account_id": "{{savingsId}}",
+    "amount": 400.00,
+    "description": "Move to savings",
+    "idempotency_key": "demo-transfer-001"
+  }
+}
+
+docs {
+  Local double-entry between two customer accounts. Also charges a flat $1.50 fee as a
+  SEPARATE `fee` transaction (funding account → EXTERNAL_CASH, recognised as Revenue),
+  so the funding account is debited amount + 1.50. Re-sending with the same
+  idempotency_key returns the original transfer (no double post, no double fee).
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

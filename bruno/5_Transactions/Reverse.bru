@@ -1,0 +1,33 @@
+meta {
+  name: Reverse
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/v1/transactions/{{withdrawalTxnId}}/reverse
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "reason": "customer requested"
+  }
+}
+
+docs {
+  Reverses the WITHDRAWAL above (a refund: credits the customer back), which always
+  succeeds. Mirror-posts and marks the original `reversed`. Initiator-only (404
+  otherwise); running it again is rejected (400 — no longer completed).
+
+  Note: reversing the DEPOSIT instead would 400 here, because the deposited funds were
+  already spent by the transfer/withdrawal — v1 rejects rather than overdrawing (no
+  negative clawback). Point this at {{depositTxnId}} right after Deposit to see a
+  deposit clawback.
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
