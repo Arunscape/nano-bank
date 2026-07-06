@@ -38,6 +38,8 @@ CREATE TABLE mandates (
     -- Spend limits; required when 'transfer:initiate' is granted (API-enforced).
     max_per_tx      DECIMAL(15,2),
     daily_cap       DECIMAL(15,2),
+    -- Optional payee allowlist for transfers; NULL = any destination account.
+    allowed_payees  UUID[],
     -- Velocity accounting, reset lazily on date rollover (account_limits pattern).
     daily_used      DECIMAL(15,2) NOT NULL DEFAULT 0,
     last_reset_date DATE NOT NULL DEFAULT CURRENT_DATE,

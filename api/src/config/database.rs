@@ -99,6 +99,7 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
             scopes          TEXT[] NOT NULL,
             max_per_tx      DECIMAL(15,2),
             daily_cap       DECIMAL(15,2),
+            allowed_payees  UUID[],
             daily_used      DECIMAL(15,2) NOT NULL DEFAULT 0,
             last_reset_date DATE NOT NULL DEFAULT CURRENT_DATE,
             status          VARCHAR(20) NOT NULL DEFAULT 'active'
@@ -139,6 +140,8 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
          ON agent_actions(mandate_id, created_at)",
         "ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'grant_mandate'",
         "ALTER TYPE audit_action ADD VALUE IF NOT EXISTS 'revoke_mandate'",
+        // Additive: DBs whose mandates table predates the Phase-2 payee allowlist.
+        "ALTER TABLE mandates ADD COLUMN IF NOT EXISTS allowed_payees UUID[]",
     ] {
         sqlx::query(ddl).execute(pool).await?;
     }

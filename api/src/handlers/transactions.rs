@@ -326,6 +326,7 @@ async fn transfer_money(
             description: &req.description,
             external_reference: req.reference.as_deref(),
             idempotency_key: req.idempotency_key.as_deref(),
+            agent: None,
         },
     )
     .await?;
@@ -341,6 +342,15 @@ pub(crate) struct TransferSpec<'a> {
     pub description: &'a str,
     pub external_reference: Option<&'a str>,
     pub idempotency_key: Option<&'a str>,
+    /// `Some` for agent-initiated transfers: reserves the mandate's spend caps
+    /// under the row lock and tags agency on the money trail.
+    pub agent: Option<AgentTransferCtx>,
+}
+
+/// Agency context for a mandate-authorized transfer.
+pub(crate) struct AgentTransferCtx {
+    pub agent_id: Uuid,
+    pub mandate_id: Uuid,
 }
 
 /// The transfer core, shared by the customer handler above and the agent
@@ -366,6 +376,21 @@ pub(crate) async fn execute_transfer(
     let cash_id = ensure_external_cash_account(&state.pool).await?;
 
     let mut tx = state.pool.begin().await?;
+
+    // Agent transfers: authorize + reserve the mandate's caps FIRST, under the
+    // mandate row lock — the global rule is mandate before accounts (only the
+    // agent path locks mandates, so no cycle with other paths). A deny aborts
+    // here; the caller records it. Caps meter the transfer *amount* only — the
+    // flat fee is a bank charge, not agent spend.
+    if let Some(agent) = &spec.agent {
+        crate::policy::authorize_and_reserve_transfer(
+            &mut tx,
+            agent.mandate_id,
+            spec.to_account_id,
+            amount,
+        )
+        .await?;
+    }
 
     // Lock both customer accounts (id-sorted) and the fee counterparty
     // (EXTERNAL_CASH) last — see [`lock_accounts_cash_last`].
@@ -407,10 +432,15 @@ pub(crate) async fn execute_transfer(
     }
 
     let reference = reference_number("TXF");
-    let metadata = match spec.idempotency_key {
+    let mut metadata = match spec.idempotency_key {
         Some(key) => json!({ "idempotency_key": key }),
         None => json!({}),
     };
+    // Agency visible on the money trail: who moved it, under which consent.
+    if let Some(agent) = &spec.agent {
+        metadata["agent_id"] = json!(agent.agent_id);
+        metadata["mandate_id"] = json!(agent.mandate_id);
+    }
     let txn_id = insert_transaction(
         &mut tx,
         &reference,
@@ -495,6 +525,23 @@ pub(crate) async fn execute_transfer(
     .bind(amount)
     .execute(&mut *tx)
     .await?;
+
+    // The *allowed* agent decision commits atomically with the movement.
+    if let Some(agent) = &spec.agent {
+        crate::policy::record_action_tx(
+            &mut tx,
+            agent.mandate_id,
+            agent.agent_id,
+            from.customer_id,
+            from.account_id,
+            "transfer",
+            Some(amount),
+            "allowed",
+            None,
+            Some(txn_id),
+        )
+        .await?;
+    }
 
     tx.commit().await?;
 
@@ -1102,7 +1149,7 @@ async fn record_summary(
     Ok(())
 }
 
-async fn find_by_idempotency_key(
+pub(crate) async fn find_by_idempotency_key(
     pool: &DatabasePool,
     key: &str,
     customer_id: Uuid,
@@ -1119,7 +1166,7 @@ async fn find_by_idempotency_key(
 }
 
 /// Load a full `TransactionResponse` (with entries) for one transaction.
-async fn load_transaction_response(
+pub(crate) async fn load_transaction_response(
     pool: &DatabasePool,
     txn_id: Uuid,
 ) -> Result<TransactionResponse, AppError> {

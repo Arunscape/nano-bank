@@ -62,6 +62,9 @@ pub struct CreateMandateRequest {
     /// Required (together with `daily_cap`) when `transfer:initiate` is granted.
     pub max_per_tx: Option<Decimal>,
     pub daily_cap: Option<Decimal>,
+    /// Optional payee allowlist for transfers; omitted/None = any destination.
+    #[validate(length(min = 1))]
+    pub allowed_payees: Option<Vec<Uuid>>,
     /// Must be in the future.
     pub expires_at: DateTime<Utc>,
 }
@@ -75,11 +78,26 @@ pub struct MandateResponse {
     pub scopes: Vec<String>,
     pub max_per_tx: Option<Decimal>,
     pub daily_cap: Option<Decimal>,
+    pub allowed_payees: Option<Vec<Uuid>>,
     pub daily_used: Decimal,
     pub status: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// Agent-initiated transfer (`POST /api/v1/agent/transfers`). The funding
+/// account is always the mandate's account — there is no `from` field by
+/// design. `idempotency_key` is REQUIRED: agents retry on timeouts far more
+/// than humans, and a replayed key must not double-spend.
+#[derive(Debug, Deserialize, Validate)]
+pub struct AgentTransferRequest {
+    pub to_account_id: Uuid,
+    pub amount: Decimal,
+    #[validate(length(min = 1, max = 500))]
+    pub description: String,
+    #[validate(length(min = 1, max = 128))]
+    pub idempotency_key: String,
 }
 
 /// Client-credentials request for an agent token

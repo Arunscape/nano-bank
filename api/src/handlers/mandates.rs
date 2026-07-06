@@ -35,7 +35,7 @@ pub fn mandate_routes() -> Router<AppState> {
 }
 
 const MANDATE_COLUMNS: &str = "mandate_id, agent_id, account_id, scopes, max_per_tx, \
-     daily_cap, daily_used, status, expires_at, created_at, revoked_at";
+     daily_cap, allowed_payees, daily_used, status, expires_at, created_at, revoked_at";
 
 /// Record a consent event (grant/revoke) in the general audit log under the
 /// acting user's identity.
@@ -123,8 +123,9 @@ async fn create_mandate(
 
     let mandate = sqlx::query_as::<_, MandateResponse>(&format!(
         "INSERT INTO mandates \
-         (customer_id, agent_id, account_id, scopes, max_per_tx, daily_cap, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         (customer_id, agent_id, account_id, scopes, max_per_tx, daily_cap, allowed_payees, \
+          expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
          RETURNING {MANDATE_COLUMNS}"
     ))
     .bind(auth.customer_id)
@@ -133,6 +134,7 @@ async fn create_mandate(
     .bind(&req.scopes)
     .bind(req.max_per_tx)
     .bind(req.daily_cap)
+    .bind(&req.allowed_payees)
     .bind(req.expires_at)
     .fetch_one(&mut *tx)
     .await
@@ -149,6 +151,7 @@ async fn create_mandate(
             "scopes": req.scopes,
             "max_per_tx": req.max_per_tx,
             "daily_cap": req.daily_cap,
+            "allowed_payees": req.allowed_payees,
             "expires_at": req.expires_at,
         }),
     )
