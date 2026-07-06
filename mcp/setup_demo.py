@@ -44,7 +44,7 @@ def main() -> None:
     try:
         assert c.get("/health").status_code == 200
     except Exception:
-        die(f"nano-bank not reachable at {BASE} — bring the stack up first (HANDOFF.md §6)")
+        die(f"nano-bank not reachable at {BASE} — bring the stack up first (see root CLAUDE.md)")
 
     stamp = int(time.time())
     email = f"demo.owner.{stamp}@example.com"

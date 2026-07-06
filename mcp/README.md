@@ -10,7 +10,8 @@ effect on the very next tool call.
 
 ## Prerequisites
 
-- The nano-bank stack up (see `HANDOFF.md` §6): Kind Postgres (port-forward on `::1:5432`),
+- The nano-bank stack up (see the root `CLAUDE.md`, "Running the stack"): Kind Postgres
+  (port-forward on `::1:5432`),
   the API on `:8081`, and ideally the modern core on `:8091` (only needed to *fund* the
   demo account — the agent plane itself never touches the GL).
 - `uv` (both scripts carry PEP 723 inline deps — no venv or install step).

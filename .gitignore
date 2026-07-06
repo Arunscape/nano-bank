@@ -25,3 +25,8 @@ __pycache__/
 
 # Agentic-banking MCP demo state (live secrets)
 mcp/.env.demo
+
+# Local working notes — never commit
+HANDOFF.md
+agentic-banking-design.md
+PLAN-*.md
