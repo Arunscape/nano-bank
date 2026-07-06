@@ -16,6 +16,12 @@ effect on the very next tool call.
 - `uv` (both scripts carry PEP 723 inline deps — no venv or install step).
 - Claude Code.
 
+> **Prefer the UI:** the bank now serves a built-in consent app at
+> **`http://localhost:8081/app`** — sign up, open an account, register an agent, grant the
+> mandate with scopes/caps/payees, and copy the generated `claude mcp add` command straight
+> from the mandate card. It also shows the live activity trail (incl. denials) and has the
+> big red **Revoke access** button. `setup_demo.py` below remains the one-shot CLI path.
+
 ## Run the demo
 
 ```bash

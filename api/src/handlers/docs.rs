@@ -111,7 +111,9 @@ pub async fn api_docs() -> Result<Html<String>, StatusCode> {
     <p>Scoped, limited, revocable AI-agent access. A <em>mandate</em> is the consent record
     binding (customer, agent, account, scopes, limits, expiry); agent tokens are pointers to it,
     so revoking the mandate kills every outstanding token on its next use. Every policy decision
-    — allow and deny — is audited.</p>
+    — allow and deny — is audited. <strong>Prefer the built-in consent UI at
+    <a href="/app"><code>/app</code></a></strong> for registration, granting, revocation, and
+    the per-mandate activity view.</p>
     <div class="endpoint">
         <span class="method post">POST</span> <code>/api/v1/agents</code><br>
         Register an agent (open; confers zero access — the secret is returned exactly once)
@@ -133,6 +135,10 @@ pub async fn api_docs() -> Result<Html<String>, StatusCode> {
     <div class="endpoint">
         <span class="method delete">DELETE</span> <code>/api/v1/mandates/{id}</code><br>
         Revoke a mandate — takes effect on the agent's next request
+    </div>
+    <div class="endpoint">
+        <span class="method get">GET</span> <code>/api/v1/mandates/{id}/actions</code><br>
+        The owner's view of the mandate's audit trail — every decision, including denials
     </div>
     <div class="endpoint">
         <span class="method get">GET</span> <code>/api/v1/agent/account</code><br>

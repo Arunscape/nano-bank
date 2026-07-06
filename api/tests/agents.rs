@@ -928,7 +928,11 @@ async fn mandate_activity_is_visible_to_its_owner() {
 
     // The owner sees BOTH decisions over HTTP (newest first).
     let resp = c
-        .get(format!("{}/api/v1/mandates/{}/actions", base_url(), mandate))
+        .get(format!(
+            "{}/api/v1/mandates/{}/actions",
+            base_url(),
+            mandate
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -958,7 +962,11 @@ async fn mandate_activity_is_visible_to_its_owner() {
     // Another customer gets 404 — the mandate's existence isn't leaked.
     let (_other, other_token) = session(&c).await;
     let resp = c
-        .get(format!("{}/api/v1/mandates/{}/actions", base_url(), mandate))
+        .get(format!(
+            "{}/api/v1/mandates/{}/actions",
+            base_url(),
+            mandate
+        ))
         .bearer_auth(&other_token)
         .send()
         .await
