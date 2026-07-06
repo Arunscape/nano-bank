@@ -22,3 +22,6 @@ Thumbs.db
 
 # Cache
 __pycache__/
+
+# Agentic-banking MCP demo state (live secrets)
+mcp/.env.demo
