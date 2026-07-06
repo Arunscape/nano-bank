@@ -95,6 +95,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.server_address()
     );
     info!(
+        "🤝 Agent-consent UI: http://{}/app",
+        settings.server_address()
+    );
+    info!(
         "💚 Health Check: http://{}/health",
         settings.server_address()
     );
@@ -137,6 +141,8 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
         .route("/health", get(handlers::health::health_check))
         // API documentation
         .route("/docs", get(handlers::docs::api_docs))
+        // Built-in consent UI (agent registration, mandates, activity)
+        .route("/app", get(handlers::app::consent_app))
         // Authentication routes
         .nest("/api/v1/auth", handlers::auth::auth_routes())
         // Customer routes

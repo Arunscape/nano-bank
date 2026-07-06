@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod agent_api;
 pub mod agents;
+pub mod app;
 pub mod auth;
 pub mod cards;
 pub mod customers;
