@@ -4,7 +4,11 @@
 # Runs psql *inside* the Postgres pod (kubectl exec), so it needs no host psql
 # client — just kubectl and a running cluster. Truncating `customers` cascades
 # through every FK dependent (addresses, kyc_documents, accounts, transactions,
-# sessions, devices, …), giving a clean slate for the next test run.
+# sessions, devices, mandates, agent_actions, …); `agents` has no FK to
+# customers, so it is truncated explicitly too — a complete fresh start
+# including the agentic-banking plane. Also removes the stale mcp/.env.demo
+# (its agent credentials are dead once agents are wiped). GL/system accounts
+# self-heal on the API's next operation.
 #
 # Usage:
 #   ./cleanup.sh              # stop input containers, show counts, TRUNCATE, show counts
@@ -44,7 +48,16 @@ show_counts() {
   echo "  customers:    $(psql_exec 'SELECT count(*) FROM customers')"
   echo "  accounts:     $(psql_exec 'SELECT count(*) FROM accounts')"
   echo "  transactions: $(psql_exec 'SELECT count(*) FROM transactions')"
+  if [ "$HAS_AGENTS" = "1" ]; then
+    echo "  agents:       $(psql_exec 'SELECT count(*) FROM agents')"
+    echo "  mandates:     $(psql_exec 'SELECT count(*) FROM mandates')"
+  fi
 }
+
+# The agent tables arrived with the agentic-banking feature; tolerate a DB
+# initialised before them.
+HAS_AGENTS=0
+[ "$(psql_exec "SELECT to_regclass('agents') IS NOT NULL")" = "t" ] && HAS_AGENTS=1
 
 echo "📊 Before:"; show_counts
 
@@ -65,8 +78,17 @@ if [ "$STOP_GENERATOR" = "1" ] && command -v podman >/dev/null 2>&1; then
   done
 fi
 
-echo "🧹 TRUNCATE ${ROOT_TABLE} RESTART IDENTITY CASCADE …"
-psql_exec "TRUNCATE TABLE ${ROOT_TABLE} RESTART IDENTITY CASCADE" >/dev/null
+WIPE_TABLES="${ROOT_TABLE}"
+[ "$HAS_AGENTS" = "1" ] && WIPE_TABLES="${WIPE_TABLES}, agents"
+echo "🧹 TRUNCATE ${WIPE_TABLES} RESTART IDENTITY CASCADE …"
+psql_exec "TRUNCATE TABLE ${WIPE_TABLES} RESTART IDENTITY CASCADE" >/dev/null
+
+# Stale demo credentials die with the agents table.
+ENV_DEMO="$(cd "$(dirname "$0")/.." && pwd)/mcp/.env.demo"
+if [ -f "$ENV_DEMO" ]; then
+  rm -f "$ENV_DEMO"
+  echo "ℹ  removed stale $ENV_DEMO (re-seed: uv run mcp/setup_demo.py)"
+fi
 
 echo "📊 After:"; show_counts
 echo "✅ Done."
