@@ -305,12 +305,6 @@ async fn transfer_money(
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
 
-    if req.from_account_id == req.to_account_id {
-        return Err(AppError::BadRequest(
-            "from and to accounts must differ".to_string(),
-        ));
-    }
-
     // Idempotent replay: return the already-posted transfer for a known key.
     // Scoped to the caller so a key can't surface another customer's transfer.
     // (Best-effort — no unique index, so tightly-concurrent duplicates with the
@@ -322,6 +316,52 @@ async fn transfer_money(
         }
     }
 
+    let resp = execute_transfer(
+        &state,
+        auth.customer_id,
+        TransferSpec {
+            from_account_id: req.from_account_id,
+            to_account_id: req.to_account_id,
+            amount,
+            description: &req.description,
+            external_reference: req.reference.as_deref(),
+            idempotency_key: req.idempotency_key.as_deref(),
+        },
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+/// A transfer to execute, independent of who asked for it.
+pub(crate) struct TransferSpec<'a> {
+    pub from_account_id: Uuid,
+    pub to_account_id: Uuid,
+    /// Pre-normalized (see `normalize_amount`).
+    pub amount: Decimal,
+    pub description: &'a str,
+    pub external_reference: Option<&'a str>,
+    pub idempotency_key: Option<&'a str>,
+}
+
+/// The transfer core, shared by the customer handler above and the agent
+/// surface (`handlers/agent_api.rs`). `customer_id` is the acting owner of the
+/// funding account: the caller's own id for customer transfers, the mandate's
+/// grantor for agent transfers. Enforces ownership, operability, funds
+/// (amount + fee), and the account's transfer limits; charges the flat fee;
+/// honors the caller's idempotency key in the metadata.
+pub(crate) async fn execute_transfer(
+    state: &AppState,
+    customer_id: Uuid,
+    spec: TransferSpec<'_>,
+) -> Result<TransactionResponse, AppError> {
+    let amount = spec.amount;
+
+    if spec.from_account_id == spec.to_account_id {
+        return Err(AppError::BadRequest(
+            "from and to accounts must differ".to_string(),
+        ));
+    }
+
     let fee = transfer_fee();
     let cash_id = ensure_external_cash_account(&state.pool).await?;
 
@@ -331,21 +371,21 @@ async fn transfer_money(
     // (EXTERNAL_CASH) last — see [`lock_accounts_cash_last`].
     let locked = lock_accounts_cash_last(
         &mut tx,
-        &[req.from_account_id, req.to_account_id, cash_id],
+        &[spec.from_account_id, spec.to_account_id, cash_id],
         cash_id,
     )
     .await?;
     let from = locked
-        .get(&req.from_account_id)
+        .get(&spec.from_account_id)
         .ok_or_else(|| AppError::NotFound("from account not found".to_string()))?;
     let to = locked
-        .get(&req.to_account_id)
+        .get(&spec.to_account_id)
         .ok_or_else(|| AppError::NotFound("to account not found".to_string()))?;
 
     // Ownership: the caller may only move money out of their own account. The
     // destination can belong to anyone. 404 (not 403) so a non-owned `from`
     // account is indistinguishable from a missing one.
-    if from.customer_id != auth.customer_id {
+    if from.customer_id != customer_id {
         return Err(AppError::NotFound("from account not found".to_string()));
     }
 
@@ -367,7 +407,7 @@ async fn transfer_money(
     }
 
     let reference = reference_number("TXF");
-    let metadata = match req.idempotency_key.as_deref() {
+    let metadata = match spec.idempotency_key {
         Some(key) => json!({ "idempotency_key": key }),
         None => json!({}),
     };
@@ -376,9 +416,9 @@ async fn transfer_money(
         &reference,
         "transfer",
         amount,
-        &req.description,
+        spec.description,
         from.customer_id,
-        req.reference.as_deref(),
+        spec.external_reference,
         metadata,
     )
     .await?;
@@ -462,8 +502,7 @@ async fn transfer_money(
         from = %from.account_id, to = %to.account_id, transaction_id = %txn_id, amount = %amount,
         "🔁 transfer posted"
     );
-    let resp = load_transaction_response(&state.pool, txn_id).await?;
-    Ok((StatusCode::CREATED, Json(resp)))
+    load_transaction_response(&state.pool, txn_id).await
 }
 
 // ---------------------------------------------------------------------------
