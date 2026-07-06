@@ -95,6 +95,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Bootstrap the Lynx rail's clearing/settlement GL accounts (idempotent).
+    if let Err(e) = rails::lynx::ensure_lynx_accounts(&pool).await {
+        warn!("❌ Failed to bootstrap Lynx GL accounts: {}", e);
+        std::process::exit(1);
+    }
+
     // Create application router
     let app = create_router(pool, &settings).await;
 

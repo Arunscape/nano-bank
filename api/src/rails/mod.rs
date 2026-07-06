@@ -9,6 +9,7 @@
 pub mod aft;
 pub(crate) mod common;
 pub mod interac;
+pub mod lynx;
 
 use async_trait::async_trait;
 use rust_decimal::Decimal;
