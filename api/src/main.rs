@@ -169,6 +169,7 @@ async fn create_router(
         // Interac e-Transfer rails
         .nest("/api/v1/interac", handlers::interac::interac_routes())
         .nest("/api/v1/aft", handlers::aft::aft_routes())
+        .nest("/api/v1/lynx", handlers::lynx::lynx_routes())
 
         // Transaction routes
         .nest("/api/v1/transactions", handlers::transactions::transaction_routes())
