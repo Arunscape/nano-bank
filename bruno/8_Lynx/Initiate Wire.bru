@@ -1,0 +1,26 @@
+meta {
+  name: Initiate Wire
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/lynx/wires
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "from_account_id": "{{accountId}}",
+    "amount": 25000.00,
+    "counterparty_name": "Bob Corp",
+    "counterparty_institution": "001",
+    "counterparty_account": "000123456789",
+    "remittance_info": "invoice 42"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("wireId", res.body.wire_id);
+}

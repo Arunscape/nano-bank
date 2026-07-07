@@ -1,0 +1,21 @@
+meta {
+  name: Request Recall
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/lynx/wires/{{wireId}}/recall
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "reason": "DUPL"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("recallId", res.body.recall_id);
+}
