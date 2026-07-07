@@ -274,6 +274,45 @@ per-message model, AFT is file-based and batched. Design spec:
   is a nano-bank account); returns match a settled entry by amount +
   counterparty account; CPA-005 is authentic in shape, not byte-exact.
 
+## Lynx wire rail
+
+The third external rail (`handlers/lynx.rs`, `rails/lynx.rs`, `lynx/iso20022.rs`)
+— Canada's **RTGS** system for high-value wires (Lynx). Unlike Interac (retail
+push) and AFT (deferred-net batch), each wire settles **individually, in real
+time, with settlement finality**. Design spec:
+`docs/specs/2026-07-06-lynx-wire-rail-design.md`.
+
+- **Own system accounts (decoupled):** `lynx@nano.bank` owns `LYNX_CLEARING`
+  (chequing) + `LYNX_SETTLEMENT` (savings), $1T overdraft. Money moves through
+  the same `Rail` verbs, plus an inherent `clawback` for inbound recalls.
+- **Two-step settlement:** a customer `POST /lynx/wires` reserves funds in
+  `LYNX_CLEARING` and emits a **pacs.008** (`status='sent'`); a network
+  `POST /lynx/network/wires/:id/settle` moves `CLEARING → SETTLEMENT` and marks
+  the wire `settled` — **final**. A guarded `sent→settled` transition makes a
+  concurrent double-settle 409.
+- **Finality + recall (no reversal):** a settled wire is irrevocable. A sender
+  may `POST /lynx/wires/:id/recall` (emits **camt.056**); the beneficiary side
+  answers via `POST /lynx/network/recalls/:id/resolve` (**camt.029** —
+  `accept`→refund / `reject`). Symmetrically, an external sender can recall a
+  wire we received (`POST /lynx/network/inbound-recall`): we `accept`→claw back
+  from the beneficiary (reject if the funds are already spent — v1) or `reject`.
+- **GL distinction (RTGS vs Interac/AFT):** settle posts **Dr Payable / Cr
+  Bank** (money leaves the bank); inbound posts **Dr Bank / Cr Payable** — real
+  central-bank money arrives immediately, where Interac/AFT inbound is a
+  `Receivable` until ACSS settles. Send/refund are net-zero `Payable/Payable`.
+- **ISO 20022:** `lynx/iso20022.rs` encodes/decodes pacs.008/pacs.009/camt.056/
+  camt.029 — authentic-shape, round-trippable, unit-tested (not XSD-validated);
+  every exchanged message is stored in the `lynx_messages` outbox.
+- **High-value floor:** a configurable minimum (`NANO_BANK__LYNX__MIN_AMOUNT`,
+  default $10,000), no ceiling; wires bypass the retail `account_limits`.
+- **Auth planes:** customer (`/wires`, `/wires/:id/recall`), service-token
+  **network** (`/network/*`, driven by `testing/lynx/lynx_simulator.py`),
+  service-token **admin** (`/admin/reject-stale` sweeps unsettled wires). The
+  viewer has a Lynx tab.
+- **available_balance:** recomputed on **customer** accounts around rail posts;
+  the Lynx system accounts stay at 0 (float on the $1T overdraft) — same rule as
+  Interac/AFT.
+
 ## Gotchas
 
 - **DB host is `::1`, not `127.0.0.1`** (dead docker-proxy on IPv4).
