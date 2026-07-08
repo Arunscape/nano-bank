@@ -502,11 +502,24 @@ async fn claim_etransfer(
 
 async fn decline_etransfer(
     State(state): State<AppState>,
-    _caller: AuthenticatedCustomer,
+    caller: AuthenticatedCustomer,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<EtransferResponse>), AppError> {
     let rail = resolve_interac(&state).await?;
     let mut tx = state.pool.begin().await?;
+
+    // Ownership: only the recipient may decline (mirrors cancel's sender check).
+    // Registered manual-claim and inbound-held transfers both carry
+    // recipient_customer_id; external-routed transfers leave it NULL, so a
+    // non-recipient (or the wrong customer) gets 404, not 403.
+    let recipient: Option<Uuid> = sqlx::query_scalar(
+        "SELECT recipient_customer_id FROM interac_etransfers WHERE etransfer_id=$1 FOR UPDATE")
+        .bind(id).fetch_optional(&mut *tx).await?
+        .ok_or_else(|| AppError::NotFound("e-Transfer not found".into()))?;
+    if recipient != Some(caller.customer_id) {
+        return Err(AppError::NotFound("e-Transfer not found".into())); // 404, not 403
+    }
+
     let (amount, sender_account, _r, _h, _a, hold_ref) = lock_available(&mut tx, id).await?;
     // Inbound held transfers have no sender_account_id (NULL in the DB, so
     // lock_available's unwrap_or_default() yields Uuid::nil()); those were
