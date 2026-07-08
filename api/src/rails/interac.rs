@@ -163,6 +163,11 @@ async fn tag_gl(tx: &mut PgTx<'_>, txn_id: Uuid, gl: &str) -> Result<(), AppErro
     Ok(())
 }
 
+// GL note: hold/release/refund all post Payable→Payable — money staying inside
+// the bank's obligation accounts — and only `accept_inbound` moves `Receivable`.
+// So funds sent to an EXTERNAL bank never debit `Bank` at settle time; the GL
+// carries an un-swept `Receivable`/`Payable` position until the ACSS-style
+// INTERAC_SETTLEMENT→Bank settlement sweep lands (deferred to the AFT rail).
 #[async_trait]
 impl Rail for InteracRail {
     fn id(&self) -> RailId {
