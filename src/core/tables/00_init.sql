@@ -22,6 +22,7 @@ SET timezone = 'America/Toronto';
 -- 7. 07_rails.sql - Payment-rail foundation (routing, participants, rail system accounts)
 -- 8. 08_interac.sql - Interac e-Transfer tables (handles, etransfers, notifications)
 -- 9. 09_aft.sql - AFT/EFT batch-rail tables (mandates, batches, entries)
+-- 10. 10_lynx.sql - Lynx RTGS wire-rail tables (wires, messages, recalls)
 
 -- To execute all scripts in order:
 -- \i 01_enums.sql
@@ -33,3 +34,4 @@ SET timezone = 'America/Toronto';
 -- \i 07_rails.sql
 -- \i 08_interac.sql
 -- \i 09_aft.sql
+-- \i 10_lynx.sql
