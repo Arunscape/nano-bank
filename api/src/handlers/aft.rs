@@ -18,7 +18,7 @@ use validator::Validate;
 
 use crate::aft::cpa005;
 use crate::errors::AppError;
-use crate::handlers::cards::{fetch_account_for_update, normalize_amount, post_gl_entry, post_two_legged, reference_number};
+use crate::handlers::cards::{fetch_account_for_update, normalize_amount, post_gl_entry, reference_number};
 use crate::handlers::AppState;
 use crate::ledger::Account as GlAccount;
 use crate::middleware::auth::{AuthenticatedCustomer, AuthenticatedService};
@@ -27,6 +27,7 @@ use crate::models::aft::{
     MandateResponse,
 };
 use crate::rails::aft::{ensure_aft_accounts, AftRail};
+use crate::rails::common::{recompute_available, zero_available};
 use crate::rails::{Destination, Rail};
 
 pub fn aft_routes() -> Router<AppState> {
@@ -36,10 +37,13 @@ pub fn aft_routes() -> Router<AppState> {
         .route("/mandates/:id", delete(revoke_mandate))
         .route("/credits", post(create_credit))
         .route("/debits", post(create_debit))
+        .route("/entries", get(list_entries))
+        // network/admin plane (service token) — the ACSS simulator + bank ops.
+        // Batches are a bank-operational concept (one shared open outbound file),
+        // so listing and submitting them are service-token ops, not customer ops;
+        // customers see their own activity via /entries.
         .route("/batches", get(list_batches))
         .route("/batches/:id/submit", post(submit_batch))
-        .route("/entries", get(list_entries))
-        // network plane (service token) — the ACSS simulator
         .route("/network/settle/:batch", post(network_settle))
         .route("/network/inbound-batch", post(network_inbound_batch))
         .route("/network/returns", post(network_returns))
@@ -57,53 +61,47 @@ fn aft_file_dir() -> String {
     std::env::var("NANO_BANK__AFT__FILE_DIR").unwrap_or_else(|_| "/tmp/nano-bank-aft".to_string())
 }
 
-// --- available_balance helpers (customer accounts only; NEVER the system
-// clearing/settlement accounts) — copied from handlers/interac.rs. ---
-
-async fn zero_available(tx: &mut crate::rails::PgTx<'_>, account_id: Uuid) -> Result<(), AppError> {
-    sqlx::query("UPDATE accounts SET available_balance = 0 WHERE account_id = $1")
-        .bind(account_id)
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
-}
-
-/// Recompute a deposit account's available balance: `balance + overdraft − open holds`.
-async fn recompute_available(
-    tx: &mut crate::rails::PgTx<'_>,
-    account_id: Uuid,
-) -> Result<(), AppError> {
-    sqlx::query(
-        "UPDATE accounts SET available_balance = balance + overdraft_limit \
-         - COALESCE((SELECT sum(amount) FROM account_holds \
-                     WHERE account_id=$1 AND released_at IS NULL), 0), \
-         updated_at = CURRENT_TIMESTAMP WHERE account_id = $1",
-    )
-    .bind(account_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
+// available_balance helpers (customer accounts only; NEVER the system
+// clearing/settlement accounts) are shared across rails in `rails::common`.
 
 // --- batch/entry helpers ---
 
 /// Get the single open outbound batch (creating one if none), locked FOR UPDATE.
 async fn open_batch(tx: &mut crate::rails::PgTx<'_>) -> Result<Uuid, AppError> {
-    if let Some(id) = sqlx::query_scalar::<_, Uuid>(
+    if let Some(id) = select_open_outbound(tx).await? {
+        return Ok(id);
+    }
+    // Create it. A concurrent originate may create it first; the partial unique
+    // index `idx_aft_batches_one_open` turns that race into ON CONFLICT DO
+    // NOTHING (no row returned), after which we re-read the winner. This can't
+    // poison the tx the way a raw 23505 would.
+    let created: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO aft_batches (direction, status) VALUES ('outbound','open') \
+         ON CONFLICT (direction) WHERE status='open' DO NOTHING RETURNING batch_id",
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(id) = created {
+        return Ok(id);
+    }
+    select_open_outbound(tx)
+        .await?
+        .ok_or_else(|| AppError::Internal("open batch vanished after conflict".into()))
+}
+
+async fn select_open_outbound(tx: &mut crate::rails::PgTx<'_>) -> Result<Option<Uuid>, AppError> {
+    Ok(sqlx::query_scalar::<_, Uuid>(
         "SELECT batch_id FROM aft_batches WHERE status='open' AND direction='outbound' \
          ORDER BY created_at LIMIT 1 FOR UPDATE",
     )
     .fetch_optional(&mut **tx)
-    .await?
-    {
-        return Ok(id);
-    }
-    let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO aft_batches (direction, status) VALUES ('outbound','open') RETURNING batch_id",
-    )
-    .fetch_one(&mut **tx)
-    .await?;
-    Ok(id)
+    .await?)
+}
+
+/// Largest amount that fits the CPA-005 10-digit cents field ($99,999,999.99).
+/// Guarded at originate so an oversized entry can't overflow the fixed width.
+fn max_cpa_amount() -> Decimal {
+    Decimal::new(9_999_999_999, 2)
 }
 
 async fn bump_batch(
@@ -150,6 +148,44 @@ async fn load_entry(state: &AppState, entry_id: Uuid) -> Result<EntryResponse, A
         entry_id: r.0, batch_id: r.1, kind: r.2, direction: r.3,
         amount: r.4, status: r.5, payee_name: r.6, return_reason: r.7,
     })
+}
+
+/// Replay lookup for an idempotent originate: the prior entry for this
+/// (originating account, key), if any.
+async fn load_entry_by_key(
+    state: &AppState,
+    originator: Uuid,
+    key: &str,
+) -> Result<Option<EntryResponse>, AppError> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT entry_id FROM aft_entries WHERE originator_account_id=$1 AND idempotency_key=$2",
+    )
+    .bind(originator)
+    .bind(key)
+    .fetch_optional(&state.pool)
+    .await?;
+    match id {
+        Some(i) => Ok(Some(load_entry(state, i).await?)),
+        None => Ok(None),
+    }
+}
+
+/// Map an originate INSERT failure to the right HTTP status: a duplicate
+/// idempotency key raced us (23505) → 409; an unknown counterparty institution
+/// or other bad FK (23503) → 400 (rather than a 500).
+fn originate_conflict(e: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(db) = &e {
+        match db.code().as_deref() {
+            Some("23505") => {
+                return AppError::Conflict("idempotency_key already used".into())
+            }
+            Some("23503") => {
+                return AppError::BadRequest("unknown counterparty institution".into())
+            }
+            _ => {}
+        }
+    }
+    AppError::from(e)
 }
 
 async fn caller_owns_account(state: &AppState, account_id: Uuid, customer_id: Uuid) -> Result<bool, AppError> {
@@ -217,12 +253,24 @@ async fn create_mandate(
     if !owns {
         return Err(AppError::NotFound("payer account not found".into()));
     }
+    // The authorized biller account must exist. (It belongs to the biller, not
+    // the caller, so we only check existence — a bad id is a 400, not a 404.)
+    let biller_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM accounts WHERE account_id=$1)",
+    )
+    .bind(req.biller_account_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !biller_exists {
+        return Err(AppError::BadRequest("biller account not found".into()));
+    }
     let freq = req.frequency.clone().unwrap_or_else(|| "monthly".to_string());
     let row = sqlx::query_as::<_, (Uuid, String)>(
-        "INSERT INTO pad_mandates (payer_account_id, biller_name, originator_id, amount_cap, frequency) \
-         VALUES ($1,$2,$3,$4,$5) RETURNING mandate_id, status::text",
+        "INSERT INTO pad_mandates (payer_account_id, biller_account_id, biller_name, originator_id, amount_cap, frequency) \
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING mandate_id, status::text",
     )
     .bind(req.payer_account_id)
+    .bind(req.biller_account_id)
     .bind(&req.biller_name)
     .bind(&req.originator_id)
     .bind(amount_cap)
@@ -234,6 +282,7 @@ async fn create_mandate(
         Json(MandateResponse {
             mandate_id: row.0,
             payer_account_id: req.payer_account_id,
+            biller_account_id: req.biller_account_id,
             biller_name: req.biller_name,
             amount_cap,
             status: row.1,
@@ -245,8 +294,8 @@ async fn list_mandates(
     State(state): State<AppState>,
     caller: AuthenticatedCustomer,
 ) -> Result<Json<Vec<MandateResponse>>, AppError> {
-    let rows = sqlx::query_as::<_, (Uuid, Uuid, String, Decimal, String)>(
-        "SELECT m.mandate_id, m.payer_account_id, m.biller_name, m.amount_cap, m.status::text \
+    let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, Decimal, String)>(
+        "SELECT m.mandate_id, m.payer_account_id, m.biller_account_id, m.biller_name, m.amount_cap, m.status::text \
          FROM pad_mandates m JOIN accounts a ON a.account_id = m.payer_account_id \
          WHERE a.customer_id = $1 ORDER BY m.created_at DESC",
     )
@@ -258,9 +307,10 @@ async fn list_mandates(
             .map(|r| MandateResponse {
                 mandate_id: r.0,
                 payer_account_id: r.1,
-                biller_name: r.2,
-                amount_cap: r.3,
-                status: r.4,
+                biller_account_id: r.2,
+                biller_name: r.3,
+                amount_cap: r.4,
+                status: r.5,
             })
             .collect(),
     ))
@@ -293,15 +343,24 @@ async fn create_credit(
 ) -> Result<(StatusCode, Json<EntryResponse>), AppError> {
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
+    if amount > max_cpa_amount() {
+        return Err(AppError::BadRequest("amount exceeds AFT file field limit".into()));
+    }
     if !caller_owns_account(&state, req.originator_account_id, caller.customer_id).await? {
         return Err(AppError::NotFound("originator account not found".into()));
+    }
+    // Idempotency replay: same (originating account, key) returns the original.
+    if let Some(key) = &req.idempotency_key {
+        if let Some(existing) = load_entry_by_key(&state, req.originator_account_id, key).await? {
+            return Ok((StatusCode::CREATED, Json(existing)));
+        }
     }
     let mut tx = state.pool.begin().await?;
     let batch_id = open_batch(&mut tx).await?;
     let entry_id: Uuid = sqlx::query_scalar(
         "INSERT INTO aft_entries (batch_id, kind, direction, originator_account_id, \
-         counterparty_institution, counterparty_transit, counterparty_account, payee_name, amount) \
-         VALUES ($1,'credit','outbound',$2,$3,$4,$5,$6,$7) RETURNING entry_id",
+         counterparty_institution, counterparty_transit, counterparty_account, payee_name, amount, idempotency_key) \
+         VALUES ($1,'credit','outbound',$2,$3,$4,$5,$6,$7,$8) RETURNING entry_id",
     )
     .bind(batch_id)
     .bind(req.originator_account_id)
@@ -310,8 +369,10 @@ async fn create_credit(
     .bind(&req.counterparty_account)
     .bind(&req.payee_name)
     .bind(amount)
+    .bind(&req.idempotency_key)
     .fetch_one(&mut *tx)
-    .await?;
+    .await
+    .map_err(originate_conflict)?;
     bump_batch(&mut tx, batch_id, amount, Decimal::ZERO).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(load_entry(&state, entry_id).await?)))
@@ -324,18 +385,30 @@ async fn create_debit(
 ) -> Result<(StatusCode, Json<EntryResponse>), AppError> {
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
+    if amount > max_cpa_amount() {
+        return Err(AppError::BadRequest("amount exceeds AFT file field limit".into()));
+    }
     // The biller's collecting account must belong to the caller.
     if !caller_owns_account(&state, req.originator_account_id, caller.customer_id).await? {
         return Err(AppError::NotFound("originator account not found".into()));
     }
     // Mandate must be active and its cap must cover the amount.
-    let mandate = sqlx::query_as::<_, (Decimal, Uuid)>(
-        "SELECT amount_cap, payer_account_id FROM pad_mandates WHERE mandate_id=$1 AND status='active'",
+    let mandate = sqlx::query_as::<_, (Decimal, Uuid, Uuid)>(
+        "SELECT amount_cap, payer_account_id, biller_account_id FROM pad_mandates \
+         WHERE mandate_id=$1 AND status='active'",
     )
     .bind(req.mandate_id)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("active mandate not found".into()))?;
+    // Only the biller account the payer authorized may collect on this mandate.
+    // Without this, any customer holding an active mandate_id could pull the
+    // payer's funds into their own account.
+    if req.originator_account_id != mandate.2 {
+        return Err(AppError::Authorization(
+            "not the authorized biller for this mandate".into(),
+        ));
+    }
     if amount > mandate.0 {
         return Err(AppError::BadRequest("amount exceeds mandate cap".into()));
     }
@@ -346,12 +419,18 @@ async fn create_debit(
     .bind(mandate.1)
     .fetch_one(&state.pool)
     .await?;
+    // Idempotency replay: same (originating account, key) returns the original.
+    if let Some(key) = &req.idempotency_key {
+        if let Some(existing) = load_entry_by_key(&state, req.originator_account_id, key).await? {
+            return Ok((StatusCode::CREATED, Json(existing)));
+        }
+    }
     let mut tx = state.pool.begin().await?;
     let batch_id = open_batch(&mut tx).await?;
     let entry_id: Uuid = sqlx::query_scalar(
         "INSERT INTO aft_entries (batch_id, kind, direction, originator_account_id, counterparty_account_id, \
-         counterparty_institution, counterparty_transit, counterparty_account, payee_name, amount, mandate_id) \
-         VALUES ($1,'debit','outbound',$2,$3,$4,$5,$6,$7,$8,$9) RETURNING entry_id",
+         counterparty_institution, counterparty_transit, counterparty_account, payee_name, amount, mandate_id, idempotency_key) \
+         VALUES ($1,'debit','outbound',$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING entry_id",
     )
     .bind(batch_id)
     .bind(req.originator_account_id)
@@ -362,15 +441,17 @@ async fn create_debit(
     .bind("PAD DEBIT")
     .bind(amount)
     .bind(req.mandate_id)
+    .bind(&req.idempotency_key)
     .fetch_one(&mut *tx)
-    .await?;
+    .await
+    .map_err(originate_conflict)?;
     bump_batch(&mut tx, batch_id, Decimal::ZERO, amount).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(load_entry(&state, entry_id).await?)))
 }
 async fn list_batches(
     State(state): State<AppState>,
-    _caller: AuthenticatedCustomer,
+    _svc: AuthenticatedService,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<BatchResponse>>, AppError> {
     let status = params.get("status").cloned();
@@ -392,7 +473,7 @@ async fn list_batches(
 }
 async fn submit_batch(
     State(state): State<AppState>,
-    _caller: AuthenticatedCustomer,
+    _svc: AuthenticatedService,
     Path(batch_id): Path<Uuid>,
 ) -> Result<Json<BatchResponse>, AppError> {
     let mut tx = state.pool.begin().await?;
@@ -449,9 +530,7 @@ async fn submit_batch(
     let file = cpa005::encode(&header, &details, &trailer);
 
     let dir = aft_file_dir();
-    std::fs::create_dir_all(&dir).ok();
     let path = format!("{dir}/{batch_id}.005");
-    std::fs::write(&path, &file).map_err(|e| AppError::Internal(format!("write CPA-005 file: {e}")))?;
 
     sqlx::query("UPDATE aft_batches SET status='submitted', file_ref=$2, cutoff_at=CURRENT_TIMESTAMP WHERE batch_id=$1")
         .bind(batch_id)
@@ -459,6 +538,17 @@ async fn submit_batch(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+
+    // Write the emitted file AFTER commit, with async IO — don't block the
+    // runtime on filesystem IO, and don't hold the batch row lock across it.
+    // network_settle reads the DB (not the file), so a write failure is a 500
+    // for the caller but leaves settlement able to proceed.
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| AppError::Internal(format!("create AFT file dir: {e}")))?;
+    tokio::fs::write(&path, &file)
+        .await
+        .map_err(|e| AppError::Internal(format!("write CPA-005 file: {e}")))?;
 
     tracing::info!(%batch_id, entries = entry_count, file = %path, "📄 AFT batch submitted");
     Ok(Json(load_batch(&state, batch_id).await?))
@@ -616,6 +706,12 @@ async fn network_inbound_batch(
             insert_inbound_entry(&mut tx, batch_id, "credit", acct, &d.payee_name, d.amount, "settled", None, Some(posting.transaction_id)).await?;
             credited += 1;
         } else {
+            // Inbound external PAD debit: applied on an NSF check alone, with NO
+            // mandate lookup — deliberately. This is the "trust ACSS + rely on
+            // returns" model: the originating institution asserts it holds the
+            // payer's authorization, and an unauthorized pull is recovered by a
+            // return (POST /aft/network/returns), not blocked here. (Contrast the
+            // OUTBOUND PAD in create_debit, which IS mandate-gated.)
             let a = fetch_account_for_update(&mut tx, acct)
                 .await?
                 .ok_or_else(|| AppError::Internal("target account gone".into()))?;

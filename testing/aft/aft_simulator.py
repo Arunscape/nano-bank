@@ -1,9 +1,13 @@
 """Mock AFT/EFT clearing system (ACSS) — plays "the batch network".
 
-nano-bank accrues AFT credits/debits into a batch, submits it (emitting a
-CPA-005 file), and waits for the clearing system to settle it and, later, return
-some debits. This simulator plays that clearing system:
+nano-bank customers accrue AFT credits/debits into the shared open batch; the
+bank cuts (submits) that batch — emitting a CPA-005 file — and the clearing
+system settles it and, later, returns some debits. Submitting the shared file is
+a bank op (service token), so this simulator plays both the bank cutoff and the
+clearing system:
 
+  0. Polls `aft_batches` for `status='open'` outbound batches and calls
+     `POST /aft/batches/{batch}/submit` (service token) to cut the file.
   1. Polls `aft_batches` (directly via Postgres, the way `viewer`/`cleanup.sh`
      read data) for `status='submitted'` batches and calls
      `POST /aft/network/settle/{batch}` on each.
@@ -164,6 +168,15 @@ def _query(sql: str) -> list[tuple]:
         return []
 
 
+def open_batches() -> list[str]:
+    return [
+        str(r[0])
+        for r in _query(
+            "SELECT batch_id FROM aft_batches WHERE status='open' AND direction='outbound'"
+        )
+    ]
+
+
 def submitted_batches() -> list[str]:
     return [str(r[0]) for r in _query("SELECT batch_id FROM aft_batches WHERE status='submitted'")]
 
@@ -201,6 +214,18 @@ def settle_batch(session: requests.Session, batch_id: str) -> None:
             f"rejected={d.get('rejected')} swept={d.get('swept_credits')}")
     else:
         log(f"· settle {batch_id[:8]} {resp.status_code}: {resp.text[:120]}")
+
+
+def submit_batch(session: requests.Session, batch_id: str) -> None:
+    # Cutting the shared outbound file is a bank/network op (service token), not a
+    # customer op — the ACSS sim plays the bank here.
+    resp = authed_post(session, f"{API_BASE_URL}/api/v1/aft/batches/{batch_id}/submit", None)
+    if resp is None:
+        return
+    if resp.status_code == 200:
+        log(f"📄 submitted batch {batch_id[:8]}")
+    else:
+        log(f"· submit {batch_id[:8]} {resp.status_code}: {resp.text[:120]}")
 
 
 def originate_inbound(session: requests.Session, coords: tuple[str, str]) -> None:
@@ -255,6 +280,8 @@ def main() -> int:
     session = requests.Session()
     try:
         while True:
+            for batch_id in open_batches():
+                submit_batch(session, batch_id)
             for batch_id in submitted_batches():
                 settle_batch(session, batch_id)
             if random.random() < INBOUND_PROB:

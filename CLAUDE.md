@@ -261,9 +261,12 @@ per-message model, AFT is file-based and batched. Design spec:
   nano-bank customers (credits `accept_inbound`; external PAD debits `hold`+
   `release`, or `rejected` on NSF).
 - **Auth planes:** customer (`/aft/mandates`, `/aft/credits`, `/aft/debits`,
-  `/aft/batches/:id/submit`, `GET /aft/batches|entries`), service-token
-  **network** (`/aft/network/settle|inbound-batch|returns`), driven by
-  `testing/aft/aft_simulator.py` (plays ACSS). The viewer has an AFT tab.
+  `GET /aft/entries`); service-token **network/admin** (`/aft/batches`,
+  `/aft/batches/:id/submit`, `/aft/network/settle|inbound-batch|returns`) — the
+  shared outbound batch is a bank-operational concept, so listing and cutting it
+  are bank ops, not customer ops. Driven by `testing/aft/aft_simulator.py` (plays
+  the bank cutoff + ACSS). Customers see their own activity via `/aft/entries`.
+  The viewer has an AFT tab.
 - **available_balance:** recomputed on **customer** accounts around rail posts;
   the AFT system accounts stay at 0 (float on the $1T overdraft) — same rule as
   Interac.

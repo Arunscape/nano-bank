@@ -6,5 +6,9 @@ meta {
 
 get {
   url: {{baseUrl}}/api/v1/aft/batches
-  auth: inherit
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
 }

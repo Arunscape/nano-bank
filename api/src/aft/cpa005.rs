@@ -38,12 +38,27 @@ pub enum CpaError {
     Malformed(String),
 }
 
+/// Render a fixed-width field. CPA-005 is an ASCII format read back by byte
+/// offset, so map any non-ASCII char to '?' first — that keeps char count ==
+/// byte count, so truncate-then-pad lands on exactly `width` bytes. Without this
+/// an accented name (André, Renée) pads short and shifts every later field.
 fn field(s: &str, width: usize) -> String {
-    let mut t: String = s.chars().take(width).collect();
+    let mut t: String = s
+        .chars()
+        .map(|c| if c.is_ascii() { c } else { '?' })
+        .take(width)
+        .collect();
     while t.len() < width {
         t.push(' ');
     }
     t
+}
+
+/// Byte-slice a record safely: out-of-range or a non-char boundary yields a
+/// `Malformed` error instead of panicking on untrusted inbound files.
+fn slice(line: &str, a: usize, b: usize) -> Result<&str, CpaError> {
+    line.get(a..b)
+        .ok_or_else(|| CpaError::Malformed(format!("record too short: {line}")))
 }
 
 fn cents(a: Decimal) -> String {
@@ -96,20 +111,20 @@ pub fn decode(s: &str) -> Result<(Header, Vec<Detail>, Trailer), CpaError> {
         match line.chars().next() {
             Some('H') => {
                 header = Some(Header {
-                    originator_id: line[1..11].trim().to_string(),
-                    created: line[11..18].trim().to_string(),
-                    file_seq: line[18..24].trim().parse().unwrap_or(0),
+                    originator_id: slice(line, 1, 11)?.trim().to_string(),
+                    created: slice(line, 11, 18)?.trim().to_string(),
+                    file_seq: slice(line, 18, 24)?.trim().parse().unwrap_or(0),
                 })
             }
             Some(c @ ('C' | 'D')) => details.push(Detail {
                 txn_code: c,
-                amount: parse_cents(&line[1..11]),
-                institution: line[11..14].trim().to_string(),
-                transit: line[14..19].trim().to_string(),
-                account: line[19..31].trim().to_string(),
-                payee_name: line[31..61].trim().to_string(),
-                originator_short: line[61..65].trim().to_string(),
-                due_date: line[65..72].trim().to_string(),
+                amount: parse_cents(slice(line, 1, 11)?),
+                institution: slice(line, 11, 14)?.trim().to_string(),
+                transit: slice(line, 14, 19)?.trim().to_string(),
+                account: slice(line, 19, 31)?.trim().to_string(),
+                payee_name: slice(line, 31, 61)?.trim().to_string(),
+                originator_short: slice(line, 61, 65)?.trim().to_string(),
+                due_date: slice(line, 65, 72)?.trim().to_string(),
                 return_reason: {
                     let r = line.get(72..76).unwrap_or("").trim();
                     if r.is_empty() {
@@ -121,9 +136,9 @@ pub fn decode(s: &str) -> Result<(Header, Vec<Detail>, Trailer), CpaError> {
             }),
             Some('T') => {
                 trailer = Some(Trailer {
-                    entry_count: line[1..7].trim().parse().unwrap_or(0),
-                    total_credits: parse_cents(&line[7..17]),
-                    total_debits: parse_cents(&line[17..27]),
+                    entry_count: slice(line, 1, 7)?.trim().parse().unwrap_or(0),
+                    total_credits: parse_cents(slice(line, 7, 17)?),
+                    total_debits: parse_cents(slice(line, 17, 27)?),
                 })
             }
             _ => return Err(CpaError::Malformed(format!("unknown record: {line}"))),
@@ -212,5 +227,30 @@ mod tests {
         d[1].return_reason = Some("NSF".into());
         let (_h, d2, _t) = decode(&encode(&h, &d, &t)).expect("decode");
         assert_eq!(d2[1].return_reason.as_deref(), Some("NSF"));
+    }
+
+    #[test]
+    fn accented_payee_stays_aligned_and_decodes() {
+        // An accented name must not shift later fixed-offset fields; non-ASCII is
+        // mapped to '?' so the file stays byte-aligned and the decoder is happy.
+        let (h, mut d, t) = sample();
+        d[0].payee_name = "André Renée".into();
+        let encoded = encode(&h, &d, &t);
+        // Every non-trailer/-header line is a fixed-width detail of equal length.
+        let detail_lines: Vec<&str> = encoded
+            .lines()
+            .filter(|l| l.starts_with('C') || l.starts_with('D'))
+            .collect();
+        assert!(detail_lines.iter().all(|l| l.len() == detail_lines[0].len()));
+        let (_h, d2, _t) = decode(&encoded).expect("accented file must decode");
+        assert_eq!(d2[0].institution, "003"); // field after payee still aligned
+        assert_eq!(d2[0].payee_name, "Andr? Ren?e");
+    }
+
+    #[test]
+    fn malformed_short_record_errors_not_panics() {
+        // A truncated detail line must return Malformed, never panic on slicing.
+        let bad = "H0000000900202618500001\nCshort\nT0000010000000000000000000\n";
+        assert!(matches!(decode(bad), Err(CpaError::Malformed(_))));
     }
 }

@@ -8,10 +8,14 @@ CREATE TYPE mandate_status   AS ENUM ('active', 'revoked');
 
 -- Pre-authorized debit mandates: a payer authorizes a biller to pull funds.
 CREATE TABLE pad_mandates (
-    mandate_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    payer_account_id UUID NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
-    biller_name      VARCHAR(200) NOT NULL,
-    originator_id    VARCHAR(50) NOT NULL,          -- the biller's AFT originator id
+    mandate_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    payer_account_id  UUID NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    -- The biller's collecting account the payer authorizes to pull funds. A PAD
+    -- debit is valid only if it originates from THIS account (see create_debit);
+    -- binds the authorization to a specific originator, as CPA Rule H1 requires.
+    biller_account_id UUID NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    biller_name       VARCHAR(200) NOT NULL,
+    originator_id     VARCHAR(50) NOT NULL,          -- the biller's AFT originator id
     amount_cap       DECIMAL(15,2) NOT NULL,
     frequency        VARCHAR(20) NOT NULL DEFAULT 'monthly',
     status           mandate_status NOT NULL DEFAULT 'active',
@@ -34,6 +38,9 @@ CREATE TABLE aft_batches (
     created_at    TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 CREATE INDEX idx_aft_batches_status ON aft_batches (status);
+-- At most one open batch per direction (the shared accrual batch). Stops a race
+-- in open_batch from creating duplicate open batches under concurrent originate.
+CREATE UNIQUE INDEX idx_aft_batches_one_open ON aft_batches (direction) WHERE status = 'open';
 
 CREATE TABLE aft_entries (
     entry_id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -50,6 +57,7 @@ CREATE TABLE aft_entries (
     mandate_id               UUID REFERENCES pad_mandates(mandate_id),
     status                   aft_entry_status NOT NULL DEFAULT 'pending',
     return_reason            VARCHAR(80),
+    idempotency_key          VARCHAR(255),
     hold_transaction_id      UUID REFERENCES transactions(transaction_id),
     settle_transaction_id    UUID REFERENCES transactions(transaction_id),
     return_transaction_id    UUID REFERENCES transactions(transaction_id),
@@ -60,3 +68,8 @@ CREATE TABLE aft_entries (
 CREATE INDEX idx_aft_entries_batch ON aft_entries (batch_id);
 CREATE INDEX idx_aft_entries_status ON aft_entries (status);
 CREATE INDEX idx_aft_entries_originator ON aft_entries (originator_account_id);
+-- A retried originate (same originating account + idempotency key) must not
+-- double-book into the open batch.
+CREATE UNIQUE INDEX idx_aft_entries_idempotency
+    ON aft_entries (originator_account_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;

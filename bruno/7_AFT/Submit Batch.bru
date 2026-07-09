@@ -7,7 +7,11 @@ meta {
 post {
   url: {{baseUrl}}/api/v1/aft/batches/{{aftBatchId}}/submit
   body: json
-  auth: inherit
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
 }
 
 body:json {

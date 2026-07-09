@@ -51,6 +51,9 @@ pub enum MandateStatus {
 #[derive(Debug, Deserialize, Validate)]
 pub struct CreateMandateRequest {
     pub payer_account_id: Uuid,
+    /// The biller's collecting account the payer authorizes to pull funds. Only
+    /// a debit originating from this account is valid (see `create_debit`).
+    pub biller_account_id: Uuid,
     #[validate(length(min = 1, max = 200))]
     pub biller_name: String,
     #[validate(length(min = 1, max = 50))]
@@ -63,6 +66,7 @@ pub struct CreateMandateRequest {
 pub struct MandateResponse {
     pub mandate_id: Uuid,
     pub payer_account_id: Uuid,
+    pub biller_account_id: Uuid,
     pub biller_name: String,
     pub amount_cap: Decimal,
     pub status: String,
@@ -82,6 +86,9 @@ pub struct CreateCreditRequest {
     pub counterparty_account: String,
     #[validate(length(min = 1, max = 200))]
     pub payee_name: String,
+    /// Optional replay guard: a repeat originate with the same key on the same
+    /// originating account returns the original entry instead of double-booking.
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -90,6 +97,8 @@ pub struct CreateDebitRequest {
     pub originator_account_id: Uuid,
     pub amount: Decimal,
     pub mandate_id: Uuid,
+    /// Optional replay guard (see `CreateCreditRequest::idempotency_key`).
+    pub idempotency_key: Option<String>,
 }
 
 // ---- responses ----
