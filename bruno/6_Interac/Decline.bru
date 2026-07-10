@@ -1,0 +1,16 @@
+meta {
+  name: Decline e-Transfer
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/interac/etransfers/{{etransferId}}/decline
+  body: none
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

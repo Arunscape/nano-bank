@@ -1,0 +1,19 @@
+meta {
+  name: Network Settle Batch
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/v1/aft/network/settle/{{aftBatchId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
+}
+
+body:json {
+  {}
+}

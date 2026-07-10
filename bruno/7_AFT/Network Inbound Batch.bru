@@ -1,0 +1,21 @@
+meta {
+  name: Network Inbound Batch
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/v1/aft/network/inbound-batch
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
+}
+
+body:json {
+  {
+    "file": "H900       2026186000001\nC000000500090000001000000000001Payroll Inc                   NANO2026186    \nT00000100000050000000000000"
+  }
+}

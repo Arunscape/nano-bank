@@ -1,0 +1,16 @@
+meta {
+  name: Cancel e-Transfer
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/interac/etransfers/{{etransferId}}/cancel
+  body: none
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

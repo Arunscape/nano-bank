@@ -1,10 +1,13 @@
+mod aft;
 mod config;
 mod errors;
 mod handlers;
 mod ledger;
+mod lynx;
 mod middleware;
 mod models;
 mod policy;
+mod rails;
 mod repositories;
 mod services;
 mod utils;
@@ -83,6 +86,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Bootstrap the Interac rail's clearing/settlement GL accounts (idempotent;
+    // also re-resolved per request, so a mid-run wipe self-heals).
+    if let Err(e) = rails::interac::ensure_interac_accounts(&pool).await {
+        warn!("❌ Failed to bootstrap Interac GL accounts: {}", e);
+        std::process::exit(1);
+    }
+
+    // Bootstrap the AFT rail's clearing/settlement GL accounts (idempotent).
+    if let Err(e) = rails::aft::ensure_aft_accounts(&pool).await {
+        warn!("❌ Failed to bootstrap AFT GL accounts: {}", e);
+        std::process::exit(1);
+    }
+
+    // Bootstrap the Lynx rail's clearing/settlement GL accounts (idempotent).
+    if let Err(e) = rails::lynx::ensure_lynx_accounts(&pool).await {
+        warn!("❌ Failed to bootstrap Lynx GL accounts: {}", e);
+        std::process::exit(1);
+    }
+
     // Create application router
     let app = create_router(pool, &settings).await;
 
@@ -157,6 +179,12 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
         .nest("/api/v1/agent", handlers::agent_api::agent_api_routes())
         // Credit-card payment rails (issuer endpoints)
         .nest("/api/v1/cards", handlers::cards::card_routes())
+
+        // Interac e-Transfer rails
+        .nest("/api/v1/interac", handlers::interac::interac_routes())
+        .nest("/api/v1/aft", handlers::aft::aft_routes())
+        .nest("/api/v1/lynx", handlers::lynx::lynx_routes())
+
         // Transaction routes
         .nest(
             "/api/v1/transactions",

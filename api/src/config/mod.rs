@@ -1,6 +1,7 @@
 pub mod database;
 
 use config::{Config, ConfigError, Environment, File};
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::env;
 
@@ -11,6 +12,10 @@ pub struct Settings {
     pub jwt: JwtSettings,
     pub security: SecuritySettings,
     pub logging: LoggingSettings,
+    #[serde(default)]
+    pub interac: InteracSettings,
+    #[serde(default)]
+    pub lynx: LynxSettings,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -61,6 +66,66 @@ pub struct SecuritySettings {
 pub struct LoggingSettings {
     pub level: String,
     pub format: String,
+}
+
+/// Interac e-Transfer rail tunables. Overridable via `config/*.toml` or the
+/// layered env vars `NANO_BANK__INTERAC__EXPIRY_DAYS` /
+/// `NANO_BANK__INTERAC__MAX_ETRANSFER_AMOUNT`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct InteracSettings {
+    /// Hold lifetime before auto-expiry (real Interac: 30 days).
+    #[serde(default = "default_expiry_days")]
+    pub expiry_days: i64,
+    /// Max amount per e-Transfer (funds check aside). Real Interac default $3,000.
+    #[serde(with = "rust_decimal::serde::str", default = "default_max_etransfer")]
+    pub max_etransfer_amount: Decimal,
+}
+
+fn default_expiry_days() -> i64 {
+    30
+}
+
+fn default_max_etransfer() -> Decimal {
+    Decimal::new(3000, 0)
+}
+
+impl Default for InteracSettings {
+    fn default() -> Self {
+        Self {
+            expiry_days: default_expiry_days(),
+            max_etransfer_amount: default_max_etransfer(),
+        }
+    }
+}
+
+/// Lynx RTGS wire rail tunables. Overridable via `config/*.toml` or the layered
+/// env vars `NANO_BANK__LYNX__MIN_AMOUNT` / `NANO_BANK__LYNX__STALE_MINUTES`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct LynxSettings {
+    /// High-value floor: the minimum wire amount (real Lynx has no retail cap;
+    /// this floor keeps low-value payments on the retail rails). Default $10,000.
+    #[serde(with = "rust_decimal::serde::str", default = "default_min_amount")]
+    pub min_amount: Decimal,
+    /// How old (minutes) a `sent` wire must be before the admin sweep rejects it.
+    #[serde(default = "default_stale_minutes")]
+    pub stale_minutes: i32,
+}
+
+fn default_min_amount() -> Decimal {
+    Decimal::new(1000000, 2)
+}
+
+fn default_stale_minutes() -> i32 {
+    60
+}
+
+impl Default for LynxSettings {
+    fn default() -> Self {
+        Self {
+            min_amount: default_min_amount(),
+            stale_minutes: default_stale_minutes(),
+        }
+    }
 }
 
 impl Settings {
@@ -140,6 +205,28 @@ impl Default for Settings {
                 level: "info".to_string(),
                 format: "json".to_string(),
             },
+            interac: InteracSettings::default(),
+            lynx: LynxSettings::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_interac_settings_from_default_toml() {
+        // Runs with cwd = crate root (api/), so config/default.toml is found.
+        let s = Settings::new().expect("config should load");
+        assert_eq!(s.interac.expiry_days, 30);
+        assert_eq!(s.interac.max_etransfer_amount, Decimal::new(3000, 0));
+    }
+
+    #[test]
+    fn loads_lynx_settings_from_default_toml() {
+        let s = Settings::new().expect("config should load");
+        assert_eq!(s.lynx.min_amount, Decimal::new(10000, 0));
+        assert_eq!(s.lynx.stale_minutes, 60);
     }
 }

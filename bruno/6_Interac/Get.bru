@@ -1,0 +1,15 @@
+meta {
+  name: Get e-Transfer
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/v1/interac/etransfers/{{etransferId}}
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

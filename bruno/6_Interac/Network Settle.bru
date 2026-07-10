@@ -1,0 +1,27 @@
+meta {
+  name: Network Settle e-Transfer
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/v1/interac/network/etransfers/{{etransferId}}/settle
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
+}
+
+body:json {
+  {
+    "outcome": "claimed",
+    "institution": "TD Canada Trust"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

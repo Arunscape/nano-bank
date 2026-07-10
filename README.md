@@ -171,6 +171,9 @@ under `/api/v1`:
 | **Customers** | `POST /customers`, `GET`/`PUT /customers/profile`, `POST /customers/kyc/documents` |
 | **Accounts** | `GET`/`POST /accounts`, `GET /accounts/{id}`, `GET /accounts/{id}/balance` |
 | **Transactions** | `POST /transactions/transfer`, `/deposit`, `/withdrawal`, `GET /transactions` |
+| **Interac** | `POST`/`GET /interac/etransfers`, `POST /interac/etransfers/{id}/{claim,decline,cancel}`, `POST`/`GET /interac/autodeposit`, `POST /interac/network/inbound`, `POST /interac/network/etransfers/{id}/settle`, `POST /interac/admin/sweep-expired` |
+| **AFT/EFT** | `POST`/`GET`/`DELETE /aft/mandates`, `POST /aft/credits`, `POST /aft/debits`, `POST /aft/batches/{id}/submit`, `GET /aft/batches`, `GET /aft/entries`, `POST /aft/network/settle/{batch}`, `POST /aft/network/inbound-batch`, `POST /aft/network/returns` |
+| **Lynx** | `POST`/`GET /lynx/wires`, `GET /lynx/wires/{id}`, `POST /lynx/wires/{id}/recall`, `POST /lynx/network/wires/{id}/settle`, `POST /lynx/network/inbound`, `POST /lynx/network/recalls/{id}/resolve`, `POST /lynx/network/inbound-recall`, `POST /lynx/admin/reject-stale` |
 | **Security** | `GET /security/sessions`, `GET /security/devices`, `POST /security/devices/trust` |
 | **System** | `GET /health`, `GET /docs` |
 

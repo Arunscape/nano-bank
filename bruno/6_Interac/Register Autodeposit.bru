@@ -1,0 +1,24 @@
+meta {
+  name: Register Autodeposit
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/interac/autodeposit
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "handle_type": "email",
+    "handle_value": "jane.doe3@example.com",
+    "deposit_account_id": "{{accountId}}"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

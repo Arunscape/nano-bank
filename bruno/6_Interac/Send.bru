@@ -1,0 +1,32 @@
+meta {
+  name: Send e-Transfer
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/interac/etransfers
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "from_account_id": "{{accountId}}",
+    "amount": 40.00,
+    "recipient_handle_type": "email",
+    "recipient_handle_value": "carol@elsewhere.ca",
+    "security_question": "fav colour",
+    "security_answer": "Blue",
+    "memo": "test transfer"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("etransferId", res.body.etransfer_id);
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -1,0 +1,31 @@
+meta {
+  name: Network Inbound e-Transfer
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/v1/interac/network/inbound
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
+}
+
+body:json {
+  {
+    "amount": 25.00,
+    "sender_name": "Dave Sender",
+    "counterparty_institution": "TD Canada Trust",
+    "recipient_handle_type": "email",
+    "recipient_handle_value": "jane.doe3@example.com",
+    "memo": "External inbound e-Transfer"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

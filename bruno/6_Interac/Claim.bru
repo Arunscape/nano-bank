@@ -1,0 +1,23 @@
+meta {
+  name: Claim e-Transfer
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/interac/etransfers/{{etransferId}}/claim
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "security_answer": "Blue",
+    "deposit_account_id": "{{accountId}}"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

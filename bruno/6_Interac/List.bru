@@ -1,0 +1,15 @@
+meta {
+  name: List e-Transfers
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/v1/interac/etransfers
+  auth: inherit
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

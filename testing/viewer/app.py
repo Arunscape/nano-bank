@@ -184,6 +184,194 @@ def render_transactions() -> None:
                  })
 
 
+def render_interac() -> None:
+    """Interac e-Transfer rail: in-flight/recent transfers, the clearing and
+    settlement GL balances, and the notification outbox (no real email/SMS —
+    just an outbox table the simulator and this viewer read)."""
+    total = int(query("SELECT count(*) AS n FROM interac_etransfers")["n"][0])
+    in_flight = int(query(
+        "SELECT count(*) AS n FROM interac_etransfers "
+        "WHERE status IN ('initiated', 'held', 'available')")["n"][0])
+    last_hour = int(query(
+        "SELECT count(*) AS n FROM interac_etransfers "
+        "WHERE created_at >= now() - interval '1 hour'")["n"][0])
+    by_status = query(
+        "SELECT status::text AS status, count(*) AS n "
+        "FROM interac_etransfers GROUP BY status ORDER BY n DESC")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total e-Transfers", f"{total:,}")
+    c2.metric("In-flight", f"{in_flight:,}")
+    c3.metric("Created (last hour)", f"{last_hour:,}")
+
+    if not by_status.empty:
+        st.caption("e-Transfers by status")
+        st.bar_chart(by_status.set_index("status")["n"], height=180)
+
+    st.subheader("🧾 Recent e-Transfers")
+    feed = query(
+        "SELECT created_at, direction::text AS direction, status::text AS status, "
+        "       amount, recipient_handle_value "
+        "FROM interac_etransfers ORDER BY created_at DESC LIMIT 200")
+    st.dataframe(feed, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                     "amount": st.column_config.NumberColumn("amount", format="$%.2f"),
+                 })
+
+    st.subheader("💰 Clearing & settlement balances")
+    balances = query(
+        "SELECT a.account_type::text AS account_type, a.balance, a.currency "
+        "FROM accounts a JOIN customers c USING (customer_id) "
+        "WHERE c.email = 'interac@nano.bank'")
+    clearing = next(
+        (float(r.balance) for r in balances.itertuples() if r.account_type == "chequing"), None)
+    settlement = next(
+        (float(r.balance) for r in balances.itertuples() if r.account_type == "savings"), None)
+    b1, b2 = st.columns(2)
+    b1.metric("INTERAC_CLEARING", f"${clearing:,.2f}" if clearing is not None else "—")
+    b2.metric("INTERAC_SETTLEMENT", f"${settlement:,.2f}" if settlement is not None else "—")
+
+    st.subheader("📬 Notification outbox")
+    notifications = query(
+        "SELECT created_at, kind::text AS kind, delivered, message "
+        "FROM interac_notifications ORDER BY created_at DESC LIMIT 200")
+    st.dataframe(notifications, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                     "delivered": st.column_config.CheckboxColumn("delivered"),
+                 })
+
+
+def render_aft() -> None:
+    """AFT/EFT batch rail: batches by status, the clearing/settlement GL
+    balances, recent entries (with returns), and PAD mandates."""
+    total_batches = int(query("SELECT count(*) AS n FROM aft_batches")["n"][0])
+    open_or_submitted = int(query(
+        "SELECT count(*) AS n FROM aft_batches WHERE status IN ('open','submitted')")["n"][0])
+    total_entries = int(query("SELECT count(*) AS n FROM aft_entries")["n"][0])
+    by_status = query(
+        "SELECT status::text AS status, count(*) AS n "
+        "FROM aft_batches GROUP BY status ORDER BY n DESC")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total batches", f"{total_batches:,}")
+    c2.metric("Open / submitted", f"{open_or_submitted:,}")
+    c3.metric("Entries", f"{total_entries:,}")
+
+    if not by_status.empty:
+        st.caption("batches by status")
+        st.bar_chart(by_status.set_index("status")["n"], height=180)
+
+    st.subheader("💰 Clearing & settlement balances")
+    balances = query(
+        "SELECT a.account_type::text AS account_type, a.balance "
+        "FROM accounts a JOIN customers c USING (customer_id) "
+        "WHERE c.email = 'aft@nano.bank'")
+    clearing = next(
+        (float(r.balance) for r in balances.itertuples() if r.account_type == "chequing"), None)
+    settlement = next(
+        (float(r.balance) for r in balances.itertuples() if r.account_type == "savings"), None)
+    b1, b2 = st.columns(2)
+    b1.metric("AFT_CLEARING", f"${clearing:,.2f}" if clearing is not None else "—")
+    b2.metric("AFT_SETTLEMENT", f"${settlement:,.2f}" if settlement is not None else "—")
+
+    st.subheader("📦 Recent batches")
+    batches = query(
+        "SELECT created_at, direction::text AS direction, status::text AS status, "
+        "       entry_count, total_credits, total_debits FROM aft_batches "
+        "ORDER BY created_at DESC LIMIT 100")
+    st.dataframe(batches, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                     "total_credits": st.column_config.NumberColumn("credits", format="$%.2f"),
+                     "total_debits": st.column_config.NumberColumn("debits", format="$%.2f"),
+                 })
+
+    st.subheader("🧾 Recent entries")
+    entries = query(
+        "SELECT created_at, kind::text AS kind, direction::text AS direction, "
+        "       status::text AS status, amount, payee_name, return_reason "
+        "FROM aft_entries ORDER BY created_at DESC LIMIT 200")
+    st.dataframe(entries, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                     "amount": st.column_config.NumberColumn("amount", format="$%.2f"),
+                 })
+
+    st.subheader("📝 PAD mandates")
+    mandates = query(
+        "SELECT created_at, biller_name, amount_cap, status::text AS status "
+        "FROM pad_mandates ORDER BY created_at DESC LIMIT 100")
+    st.dataframe(mandates, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                     "amount_cap": st.column_config.NumberColumn("cap", format="$%.2f"),
+                 })
+
+
+def render_lynx() -> None:
+    """Lynx RTGS wire rail: wires by direction/status, the clearing/settlement
+    GL balances, recent wires, the ISO 20022 message log, and recalls."""
+    total_wires = int(query("SELECT count(*) AS n FROM lynx_wires")["n"][0])
+    settled = int(query("SELECT count(*) AS n FROM lynx_wires WHERE status='settled'")["n"][0])
+    recalls = int(query("SELECT count(*) AS n FROM lynx_recalls")["n"][0])
+    by_status = query(
+        "SELECT status::text AS status, count(*) AS n "
+        "FROM lynx_wires GROUP BY status ORDER BY n DESC")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total wires", f"{total_wires:,}")
+    c2.metric("Settled", f"{settled:,}")
+    c3.metric("Recalls", f"{recalls:,}")
+
+    if not by_status.empty:
+        st.caption("wires by status")
+        st.bar_chart(by_status.set_index("status")["n"], height=180)
+
+    st.subheader("💰 Clearing & settlement balances")
+    balances = query(
+        "SELECT a.account_type::text AS account_type, a.balance "
+        "FROM accounts a JOIN customers c USING (customer_id) "
+        "WHERE c.email = 'lynx@nano.bank'")
+    clearing = next(
+        (float(r.balance) for r in balances.itertuples() if r.account_type == "chequing"), None)
+    settlement = next(
+        (float(r.balance) for r in balances.itertuples() if r.account_type == "savings"), None)
+    b1, b2 = st.columns(2)
+    b1.metric("LYNX_CLEARING", f"${clearing:,.2f}" if clearing is not None else "—")
+    b2.metric("LYNX_SETTLEMENT", f"${settlement:,.2f}" if settlement is not None else "—")
+
+    st.subheader("🌐 Recent wires")
+    wires = query(
+        "SELECT created_at, direction::text AS direction, status::text AS status, amount, "
+        "       counterparty_name, counterparty_institution AS inst, message_type "
+        "FROM lynx_wires ORDER BY created_at DESC LIMIT 200")
+    st.dataframe(wires, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                     "amount": st.column_config.NumberColumn("amount", format="$%.2f"),
+                 })
+
+    st.subheader("✉️ ISO 20022 message log")
+    messages = query(
+        "SELECT created_at, message_type, flow FROM lynx_messages "
+        "ORDER BY created_at DESC LIMIT 200")
+    st.dataframe(messages, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                 })
+
+    st.subheader("↩️ Recalls")
+    recall_rows = query(
+        "SELECT created_at, direction::text AS direction, status::text AS status, "
+        "       reason, resolution_reason FROM lynx_recalls ORDER BY created_at DESC LIMIT 100")
+    st.dataframe(recall_rows, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                 })
+
+
 def main() -> None:
     st.set_page_config(page_title="nano-bank viewer", page_icon="🏦", layout="wide")
     st.title("🏦 nano-bank · live activity")
@@ -191,8 +379,8 @@ def main() -> None:
                f"refresh every {REFRESH_SECONDS}s")
     st_autorefresh(interval=REFRESH_SECONDS * 1000, key="refresh")
 
-    tab_customers, tab_accounts, tab_tx = st.tabs(
-        ["👤 Customers", "💳 Accounts", "💸 Card transactions"])
+    tab_customers, tab_accounts, tab_tx, tab_interac, tab_aft, tab_lynx = st.tabs(
+        ["👤 Customers", "💳 Accounts", "💸 Card transactions", "📨 Interac", "🏦 AFT", "🌐 Lynx"])
     with tab_customers:
         try:
             render_customers()
@@ -211,6 +399,21 @@ def main() -> None:
     with tab_tx:
         try:
             render_transactions()
+        except Exception as e:
+            st.error(f"Database error: {e}")
+    with tab_interac:
+        try:
+            render_interac()
+        except Exception as e:
+            st.error(f"Database error: {e}")
+    with tab_aft:
+        try:
+            render_aft()
+        except Exception as e:
+            st.error(f"Database error: {e}")
+    with tab_lynx:
+        try:
+            render_lynx()
         except Exception as e:
             st.error(f"Database error: {e}")
 

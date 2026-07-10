@@ -1,0 +1,26 @@
+meta {
+  name: Create PAD Mandate
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/aft/mandates
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "payer_account_id": "{{accountId}}",
+    "biller_account_id": "{{accountId}}",
+    "biller_name": "Hydro One",
+    "originator_id": "BILL001",
+    "amount_cap": 100.00,
+    "frequency": "monthly"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("mandateId", res.body.mandate_id);
+}

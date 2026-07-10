@@ -1,0 +1,20 @@
+meta {
+  name: Sweep Expired e-Transfers
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/v1/interac/admin/sweep-expired
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
