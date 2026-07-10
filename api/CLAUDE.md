@@ -21,11 +21,17 @@ the big picture (the kernel split and the two cores).
   port). `mod.rs` = `trait Rail { hold, release, refund, accept_inbound }` +
   neutral types (`RailId`, `Hold`, `Destination`, `RailPosting`); `interac.rs` =
   `InteracRail` + `ensure_interac_accounts`. See `## Rails` below.
+- `src/aft/` — the **CPA-005** fixed-width file codec (`cpa005.rs`:
+  `encode`/`decode`, round-trippable) for the AFT batch rail.
+- `src/lynx/` — the **ISO 20022** message codec (`iso20022.rs`:
+  pacs.008/pacs.009/camt.056/camt.029, `encode_*`/`decode_*`, round-trippable)
+  for the Lynx RTGS wire rail.
 - `src/handlers/` — axum handlers. `ledger.rs` is the wired journal flow;
   `cards.rs` is the card rails; `transactions.rs` is deposit/withdrawal/transfer
   + history (deposit/withdrawal post to the core, transfer is local-only; it
   reuses the posting helpers from `cards.rs`); `interac.rs` is the Interac
-  e-Transfer lifecycle (`## Rails`); the rest are mostly stubs.
+  e-Transfer lifecycle and `aft.rs` is the AFT/EFT batch rail (`## Rails`); the
+  rest are mostly stubs.
 - `src/errors/mod.rs` — `AppError` → HTTP. Includes `Upstream { status, message }`
   used to **preserve a core's status** when proxying (see below).
 - `src/config/`, `src/models/`, `src/middleware/`, `src/repositories/`,
@@ -82,6 +88,22 @@ card rails' system accounts. Three auth planes: customer (`/etransfers`,
 accounts around rail posts (the balance trigger only maintains `balance`); the
 system clearing/settlement accounts keep it at 0. Full detail in the repo-root
 `CLAUDE.md` and `docs/specs/2026-07-04-interac-rail-foundation-design.md`.
+
+**AFT/EFT** (`handlers/aft.rs`, `rails/aft.rs`, `aft/cpa005.rs`): the batch rail —
+`aft@nano.bank` owns `AFT_CLEARING`/`AFT_SETTLEMENT` (decoupled from cards). Money
+moves through the same `Rail` verbs; batching, the CPA-005 file emit/ingest, the
+settlement-window sweep (external cash → `Bank`), PAD mandates, and returns are
+orchestration in `handlers/aft.rs`. See the repo-root `CLAUDE.md` and
+`docs/specs/2026-07-05-aft-eft-rail-design.md`.
+
+**Lynx** (`handlers/lynx.rs`, `rails/lynx.rs`, `lynx/iso20022.rs`): the RTGS
+high-value wire rail — `lynx@nano.bank` owns `LYNX_CLEARING`/`LYNX_SETTLEMENT`.
+Two-step send→settle with finality, inbound credit, recall both directions
+(camt.056/camt.029), and a stale-wire sweep are orchestration in
+`handlers/lynx.rs`; `LynxRail` adds an inherent `clawback` beside the four `Rail`
+verbs. Its settle/inbound GL differs from Interac/AFT (`Payable↔Bank`, not
+`Receivable`) because RTGS settles in central-bank money immediately. See the
+repo-root `CLAUDE.md` and `docs/specs/2026-07-06-lynx-wire-rail-design.md`.
 
 ## Build / run
 

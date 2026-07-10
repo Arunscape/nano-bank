@@ -236,6 +236,83 @@ The first **external payment rail**, built on a small `Rail` port that sits
   the ACSS-style `INTERAC_SETTLEMENT`→`Bank` settlement sweep (lands with the AFT
   rail), and Request Money.
 
+## AFT / EFT batch rail
+
+The second external rail (`handlers/aft.rs`, `rails/aft.rs`, `aft/cpa005.rs`) —
+Canada's **batch** rail (Automated Funds Transfer over ACSS). Unlike Interac's
+per-message model, AFT is file-based and batched. Design spec:
+`docs/specs/2026-07-05-aft-eft-rail-design.md`.
+
+- **Own system accounts (decoupled from cards/Interac):** `aft@nano.bank` owns
+  `AFT_CLEARING` (chequing) + `AFT_SETTLEMENT` (savings), $1T overdraft. Reuses
+  the `Rail` port (`hold`/`release`/`refund`/`accept_inbound`) for the money moves.
+- **Two products:** direct-deposit **credits** (pay external accounts / receive
+  inbound) and **pre-authorized debits (PAD)**, gated by a `pad_mandates` record
+  (a payer authorizes a biller, with an amount cap; revocable).
+- **Lifecycle:** originate credits/debits → they accrue in the single open
+  outbound batch → `POST /aft/batches/:id/submit` closes it and emits a real
+  **CPA-005-style fixed-width file** (`aft/cpa005.rs`, round-trippable) →
+  `POST /aft/network/settle/:batch` applies the per-entry legs and posts the
+  **settlement sweep** (external direct-deposit cash → `Bank` via the Ledger
+  port; per-entry posts are `Payable`/`Payable` reclasses) → NSF entries are
+  `rejected`; settled entries can be **returned** via `POST /aft/network/returns`
+  (a returns file that reverses them).
+- **Inbound:** `POST /aft/network/inbound-batch` ingests a CPA-005 file targeting
+  nano-bank customers (credits `accept_inbound`; external PAD debits `hold`+
+  `release`, or `rejected` on NSF).
+- **Auth planes:** customer (`/aft/mandates`, `/aft/credits`, `/aft/debits`,
+  `GET /aft/entries`); service-token **network/admin** (`/aft/batches`,
+  `/aft/batches/:id/submit`, `/aft/network/settle|inbound-batch|returns`) — the
+  shared outbound batch is a bank-operational concept, so listing and cutting it
+  are bank ops, not customer ops. Driven by `testing/aft/aft_simulator.py` (plays
+  the bank cutoff + ACSS). Customers see their own activity via `/aft/entries`.
+  The viewer has an AFT tab.
+- **available_balance:** recomputed on **customer** accounts around rail posts;
+  the AFT system accounts stay at 0 (float on the $1T overdraft) — same rule as
+  Interac.
+- **v1 simplifications:** PAD payers are intra-bank (mandate `payer_account_id`
+  is a nano-bank account); returns match a settled entry by amount +
+  counterparty account; CPA-005 is authentic in shape, not byte-exact.
+
+## Lynx wire rail
+
+The third external rail (`handlers/lynx.rs`, `rails/lynx.rs`, `lynx/iso20022.rs`)
+— Canada's **RTGS** system for high-value wires (Lynx). Unlike Interac (retail
+push) and AFT (deferred-net batch), each wire settles **individually, in real
+time, with settlement finality**. Design spec:
+`docs/specs/2026-07-06-lynx-wire-rail-design.md`.
+
+- **Own system accounts (decoupled):** `lynx@nano.bank` owns `LYNX_CLEARING`
+  (chequing) + `LYNX_SETTLEMENT` (savings), $1T overdraft. Money moves through
+  the same `Rail` verbs, plus an inherent `clawback` for inbound recalls.
+- **Two-step settlement:** a customer `POST /lynx/wires` reserves funds in
+  `LYNX_CLEARING` and emits a **pacs.008** (`status='sent'`); a network
+  `POST /lynx/network/wires/:id/settle` moves `CLEARING → SETTLEMENT` and marks
+  the wire `settled` — **final**. A guarded `sent→settled` transition makes a
+  concurrent double-settle 409.
+- **Finality + recall (no reversal):** a settled wire is irrevocable. A sender
+  may `POST /lynx/wires/:id/recall` (emits **camt.056**); the beneficiary side
+  answers via `POST /lynx/network/recalls/:id/resolve` (**camt.029** —
+  `accept`→refund / `reject`). Symmetrically, an external sender can recall a
+  wire we received (`POST /lynx/network/inbound-recall`): we `accept`→claw back
+  from the beneficiary (reject if the funds are already spent — v1) or `reject`.
+- **GL distinction (RTGS vs Interac/AFT):** settle posts **Dr Payable / Cr
+  Bank** (money leaves the bank); inbound posts **Dr Bank / Cr Payable** — real
+  central-bank money arrives immediately, where Interac/AFT inbound is a
+  `Receivable` until ACSS settles. Send/refund are net-zero `Payable/Payable`.
+- **ISO 20022:** `lynx/iso20022.rs` encodes/decodes pacs.008/pacs.009/camt.056/
+  camt.029 — authentic-shape, round-trippable, unit-tested (not XSD-validated);
+  every exchanged message is stored in the `lynx_messages` outbox.
+- **High-value floor:** a configurable minimum (`NANO_BANK__LYNX__MIN_AMOUNT`,
+  default $10,000), no ceiling; wires bypass the retail `account_limits`.
+- **Auth planes:** customer (`/wires`, `/wires/:id/recall`), service-token
+  **network** (`/network/*`, driven by `testing/lynx/lynx_simulator.py`),
+  service-token **admin** (`/admin/reject-stale` sweeps unsettled wires). The
+  viewer has a Lynx tab.
+- **available_balance:** recomputed on **customer** accounts around rail posts;
+  the Lynx system accounts stay at 0 (float on the $1T overdraft) — same rule as
+  Interac/AFT.
+
 ## Gotchas
 
 - **DB host is `::1`, not `127.0.0.1`** (dead docker-proxy on IPv4).

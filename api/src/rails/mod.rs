@@ -6,7 +6,10 @@
 //! The trait's verbs are the clearing/settlement plumbing common to every rail;
 //! product lifecycle (Interac's claim/decline/expiry) lives in the handler.
 
+pub mod aft;
+pub(crate) mod common;
 pub mod interac;
+pub mod lynx;
 
 use async_trait::async_trait;
 use rust_decimal::Decimal;

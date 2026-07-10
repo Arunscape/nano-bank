@@ -1,0 +1,19 @@
+meta {
+  name: Create PAD Debit
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/aft/debits
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "originator_account_id": "{{accountId}}",
+    "amount": 25.00,
+    "mandate_id": "{{mandateId}}"
+  }
+}

@@ -14,6 +14,8 @@ pub struct Settings {
     pub logging: LoggingSettings,
     #[serde(default)]
     pub interac: InteracSettings,
+    #[serde(default)]
+    pub lynx: LynxSettings,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -88,6 +90,36 @@ impl Default for InteracSettings {
         Self {
             expiry_days: default_expiry_days(),
             max_etransfer_amount: default_max_etransfer(),
+        }
+    }
+}
+
+/// Lynx RTGS wire rail tunables. Overridable via `config/*.toml` or the layered
+/// env vars `NANO_BANK__LYNX__MIN_AMOUNT` / `NANO_BANK__LYNX__STALE_MINUTES`.
+#[derive(Debug, Deserialize, Clone)]
+pub struct LynxSettings {
+    /// High-value floor: the minimum wire amount (real Lynx has no retail cap;
+    /// this floor keeps low-value payments on the retail rails). Default $10,000.
+    #[serde(with = "rust_decimal::serde::str", default = "default_min_amount")]
+    pub min_amount: Decimal,
+    /// How old (minutes) a `sent` wire must be before the admin sweep rejects it.
+    #[serde(default = "default_stale_minutes")]
+    pub stale_minutes: i32,
+}
+
+fn default_min_amount() -> Decimal {
+    Decimal::new(1000000, 2)
+}
+
+fn default_stale_minutes() -> i32 {
+    60
+}
+
+impl Default for LynxSettings {
+    fn default() -> Self {
+        Self {
+            min_amount: default_min_amount(),
+            stale_minutes: default_stale_minutes(),
         }
     }
 }
@@ -169,6 +201,7 @@ impl Default for Settings {
                 format: "json".to_string(),
             },
             interac: InteracSettings::default(),
+            lynx: LynxSettings::default(),
         }
     }
 }
@@ -183,5 +216,12 @@ mod tests {
         let s = Settings::new().expect("config should load");
         assert_eq!(s.interac.expiry_days, 30);
         assert_eq!(s.interac.max_etransfer_amount, Decimal::new(3000, 0));
+    }
+
+    #[test]
+    fn loads_lynx_settings_from_default_toml() {
+        let s = Settings::new().expect("config should load");
+        assert_eq!(s.lynx.min_amount, Decimal::new(10000, 0));
+        assert_eq!(s.lynx.stale_minutes, 60);
     }
 }

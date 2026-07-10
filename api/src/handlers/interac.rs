@@ -24,6 +24,7 @@ use crate::models::interac::{
     ClaimEtransferRequest, EtransferResponse, HandleResponse, InboundEtransferRequest,
     RegisterAutodepositRequest, SendEtransferRequest, SettleEtransferRequest,
 };
+use crate::rails::common::{recompute_available, zero_available};
 use crate::rails::interac::{ensure_interac_accounts, normalize_handle, InteracRail};
 use crate::rails::{Destination, Rail};
 use crate::utils::password::{hash_password, verify_password};
@@ -243,32 +244,8 @@ async fn set_available(tx: &mut crate::rails::PgTx<'_>, id: Uuid) -> Result<(), 
     Ok(())
 }
 
-/// Zero a deposit account's `available_balance` ahead of a debit leg so the
-/// balance trigger can't transiently violate `chk_available_balance_logical`.
-async fn zero_available(tx: &mut crate::rails::PgTx<'_>, account_id: Uuid) -> Result<(), AppError> {
-    sqlx::query("UPDATE accounts SET available_balance = 0 WHERE account_id = $1")
-        .bind(account_id)
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
-}
-
-/// Recompute a deposit account's available balance: `balance + overdraft − open holds`.
-async fn recompute_available(
-    tx: &mut crate::rails::PgTx<'_>,
-    account_id: Uuid,
-) -> Result<(), AppError> {
-    sqlx::query(
-        "UPDATE accounts SET available_balance = balance + overdraft_limit \
-         - COALESCE((SELECT sum(amount) FROM account_holds \
-                     WHERE account_id=$1 AND released_at IS NULL), 0), \
-         updated_at = CURRENT_TIMESTAMP WHERE account_id = $1",
-    )
-    .bind(account_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
+// `zero_available` / `recompute_available` (customer accounts only) are shared
+// across rails in `rails::common`.
 
 async fn mark_deposited(
     tx: &mut crate::rails::PgTx<'_>,

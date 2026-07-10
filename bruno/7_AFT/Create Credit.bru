@@ -1,0 +1,26 @@
+meta {
+  name: Create Direct-Deposit Credit
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/aft/credits
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "originator_account_id": "{{accountId}}",
+    "amount": 40.00,
+    "counterparty_institution": "003",
+    "counterparty_transit": "00001",
+    "counterparty_account": "000000001234",
+    "payee_name": "Alice External"
+  }
+}
+
+script:post-response {
+  bru.setEnvVar("aftBatchId", res.body.batch_id);
+}
