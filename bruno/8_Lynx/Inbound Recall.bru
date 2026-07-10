@@ -1,0 +1,23 @@
+meta {
+  name: Inbound Recall
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/v1/lynx/network/inbound-recall
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
+}
+
+body:json {
+  {
+    "wire_id": "{{wireId}}",
+    "decision": "accept",
+    "reason": "sender error"
+  }
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Resolve Recall
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/v1/lynx/network/recalls/{{recallId}}/resolve
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
+}
+
+body:json {
+  {
+    "decision": "accept",
+    "reason": "returned"
+  }
+}

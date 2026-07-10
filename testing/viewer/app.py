@@ -310,6 +310,68 @@ def render_aft() -> None:
                  })
 
 
+def render_lynx() -> None:
+    """Lynx RTGS wire rail: wires by direction/status, the clearing/settlement
+    GL balances, recent wires, the ISO 20022 message log, and recalls."""
+    total_wires = int(query("SELECT count(*) AS n FROM lynx_wires")["n"][0])
+    settled = int(query("SELECT count(*) AS n FROM lynx_wires WHERE status='settled'")["n"][0])
+    recalls = int(query("SELECT count(*) AS n FROM lynx_recalls")["n"][0])
+    by_status = query(
+        "SELECT status::text AS status, count(*) AS n "
+        "FROM lynx_wires GROUP BY status ORDER BY n DESC")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total wires", f"{total_wires:,}")
+    c2.metric("Settled", f"{settled:,}")
+    c3.metric("Recalls", f"{recalls:,}")
+
+    if not by_status.empty:
+        st.caption("wires by status")
+        st.bar_chart(by_status.set_index("status")["n"], height=180)
+
+    st.subheader("💰 Clearing & settlement balances")
+    balances = query(
+        "SELECT a.account_type::text AS account_type, a.balance "
+        "FROM accounts a JOIN customers c USING (customer_id) "
+        "WHERE c.email = 'lynx@nano.bank'")
+    clearing = next(
+        (float(r.balance) for r in balances.itertuples() if r.account_type == "chequing"), None)
+    settlement = next(
+        (float(r.balance) for r in balances.itertuples() if r.account_type == "savings"), None)
+    b1, b2 = st.columns(2)
+    b1.metric("LYNX_CLEARING", f"${clearing:,.2f}" if clearing is not None else "—")
+    b2.metric("LYNX_SETTLEMENT", f"${settlement:,.2f}" if settlement is not None else "—")
+
+    st.subheader("🌐 Recent wires")
+    wires = query(
+        "SELECT created_at, direction::text AS direction, status::text AS status, amount, "
+        "       counterparty_name, counterparty_institution AS inst, message_type "
+        "FROM lynx_wires ORDER BY created_at DESC LIMIT 200")
+    st.dataframe(wires, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                     "amount": st.column_config.NumberColumn("amount", format="$%.2f"),
+                 })
+
+    st.subheader("✉️ ISO 20022 message log")
+    messages = query(
+        "SELECT created_at, message_type, flow FROM lynx_messages "
+        "ORDER BY created_at DESC LIMIT 200")
+    st.dataframe(messages, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                 })
+
+    st.subheader("↩️ Recalls")
+    recall_rows = query(
+        "SELECT created_at, direction::text AS direction, status::text AS status, "
+        "       reason, resolution_reason FROM lynx_recalls ORDER BY created_at DESC LIMIT 100")
+    st.dataframe(recall_rows, use_container_width=True, hide_index=True,
+                 column_config={
+                     "created_at": st.column_config.DatetimeColumn("when", format="HH:mm:ss"),
+                 })
+
+
 def main() -> None:
     st.set_page_config(page_title="nano-bank viewer", page_icon="🏦", layout="wide")
     st.title("🏦 nano-bank · live activity")
@@ -317,8 +379,8 @@ def main() -> None:
                f"refresh every {REFRESH_SECONDS}s")
     st_autorefresh(interval=REFRESH_SECONDS * 1000, key="refresh")
 
-    tab_customers, tab_accounts, tab_tx, tab_interac, tab_aft = st.tabs(
-        ["👤 Customers", "💳 Accounts", "💸 Card transactions", "📨 Interac", "🏦 AFT"])
+    tab_customers, tab_accounts, tab_tx, tab_interac, tab_aft, tab_lynx = st.tabs(
+        ["👤 Customers", "💳 Accounts", "💸 Card transactions", "📨 Interac", "🏦 AFT", "🌐 Lynx"])
     with tab_customers:
         try:
             render_customers()
@@ -347,6 +409,11 @@ def main() -> None:
     with tab_aft:
         try:
             render_aft()
+        except Exception as e:
+            st.error(f"Database error: {e}")
+    with tab_lynx:
+        try:
+            render_lynx()
         except Exception as e:
             st.error(f"Database error: {e}")
 

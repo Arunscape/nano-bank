@@ -44,7 +44,9 @@ pub(crate) struct RailCtx {
 /// Create a completed `transactions` row for one rail movement; return its id.
 /// `op` is the verb ("hold"/"release"/"refund"/"inbound"); the stored
 /// `transaction_type` is `"<rail>_<op>"` and the metadata is tagged with the rail.
-async fn new_txn(
+/// `pub(crate)` so a rail with bespoke GL (Lynx) can reuse it while keeping its
+/// own verb bodies.
+pub(crate) async fn new_txn(
     tx: &mut PgTx<'_>,
     ctx: RailCtx,
     op: &str,
@@ -71,7 +73,7 @@ async fn new_txn(
     Ok(id)
 }
 
-async fn tag_gl(tx: &mut PgTx<'_>, txn_id: Uuid, gl: &str) -> Result<(), AppError> {
+pub(crate) async fn tag_gl(tx: &mut PgTx<'_>, txn_id: Uuid, gl: &str) -> Result<(), AppError> {
     sqlx::query(
         "UPDATE transactions SET metadata = jsonb_set(COALESCE(metadata,'{}'::jsonb), \
          '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1",

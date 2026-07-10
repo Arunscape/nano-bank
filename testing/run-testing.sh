@@ -31,9 +31,10 @@ podman build -t localhost/nano-bank-generator:latest generator
 podman build -t localhost/nano-bank-visa:latest      visa
 podman build -t localhost/nano-bank-interac:latest   interac
 podman build -t localhost/nano-bank-aft:latest       aft
+podman build -t localhost/nano-bank-lynx:latest      lynx
 
 echo "🧹 Removing any existing containers …"
-podman rm -f nano-bank-viewer nano-bank-generator nano-bank-visa nano-bank-interac nano-bank-aft >/dev/null 2>&1 || true
+podman rm -f nano-bank-viewer nano-bank-generator nano-bank-visa nano-bank-interac nano-bank-aft nano-bank-lynx >/dev/null 2>&1 || true
 
 echo "📊 Starting viewer on http://localhost:${VIEWER_PORT} …"
 podman run -d --name nano-bank-viewer \
@@ -81,11 +82,23 @@ podman run -d --name nano-bank-aft \
   -e RETURN_PROB="${AFT_RETURN_PROB:-0.2}" \
   localhost/nano-bank-aft:latest
 
+echo "🌐 Starting Lynx RTGS network simulator …"
+podman run -d --name nano-bank-lynx \
+  --network=host --restart unless-stopped \
+  -e API_BASE_URL="$API_BASE_URL" \
+  -e SERVICE_CLIENT_SECRET="$SERVICE_CLIENT_SECRET" \
+  -e DB_HOST="$DB_HOST" -e DB_PORT="$DB_PORT" \
+  -e INTERVAL_SECONDS="${LYNX_INTERVAL_SECONDS:-7}" \
+  -e INBOUND_PROB="${LYNX_INBOUND_PROB:-0.3}" \
+  -e RECALL_PROB="${LYNX_RECALL_PROB:-0.1}" \
+  localhost/nano-bank-lynx:latest
+
 echo ""
 echo "✅ Up. Viewer: http://localhost:${VIEWER_PORT}"
 echo "   Logs:  podman logs -f nano-bank-generator"
 echo "          podman logs -f nano-bank-visa"
 echo "          podman logs -f nano-bank-interac"
 echo "          podman logs -f nano-bank-aft"
+echo "          podman logs -f nano-bank-lynx"
 echo "          podman logs -f nano-bank-viewer"
 echo "   Stop:  ./stop-testing.sh"

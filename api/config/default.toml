@@ -38,3 +38,10 @@ format = "json"
 expiry_days = 30
 # Max amount per e-Transfer (string so it deserialises to Decimal exactly).
 max_etransfer_amount = "3000"
+
+[lynx]
+# High-value floor: the minimum wire amount (string so it deserialises to
+# Decimal exactly). No ceiling — Lynx is the high-value RTGS rail.
+min_amount = "10000"
+# How old (minutes) a `sent` wire must be before the admin sweep rejects it.
+stale_minutes = 60
