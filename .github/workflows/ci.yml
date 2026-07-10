@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: nano_bank_db
+          POSTGRES_USER: nanobank_user
+          POSTGRES_PASSWORD: secure_nano_password_2024!
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+
+      - name: Install PostgreSQL Client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Initialize Database Schema
+        env:
+          PGPASSWORD: secure_nano_password_2024!
+        run: |
+          for file in src/core/tables/00_init.sql \
+                      src/core/tables/01_enums.sql \
+                      src/core/tables/02_customers.sql \
+                      src/core/tables/03_accounts.sql \
+                      src/core/tables/04_transactions.sql \
+                      src/core/tables/05_security.sql \
+                      src/core/tables/06_triggers.sql \
+                      src/core/tables/07_rails.sql \
+                      src/core/tables/08_interac.sql; do
+            echo "Applying $file..."
+            psql -h 127.0.0.1 -U nanobank_user -d nano_bank_db -f "$file"
+          done
+
+      - name: Format Check
+        run: cargo fmt --all -- --check
+        working-directory: api
+
+      - name: Lint Check (Clippy)
+        run: cargo clippy --all-targets
+        working-directory: api
+
+      - name: Build All Targets
+        run: cargo build --all-targets
+        working-directory: api
+
+      - name: Start API Server
+        env:
+          NANO_BANK__DATABASE__HOST: 127.0.0.1
+          NANO_BANK__DATABASE__PORT: 5432
+          NANO_BANK__DATABASE__USERNAME: nanobank_user
+          NANO_BANK__DATABASE__PASSWORD: secure_nano_password_2024!
+          NANO_BANK__DATABASE__DATABASE_NAME: nano_bank_db
+        run: |
+          cargo run &
+          echo "Waiting for API to be ready..."
+          for i in {1..30}; do
+            if curl -s http://localhost:8081/health > /dev/null; then
+              echo "API Server is ready!"
+              break
+            fi
+            sleep 1
+          done
+        working-directory: api
+
+      - name: Run Tests
+        env:
+          NANO_BANK__DATABASE__HOST: 127.0.0.1
+          NANO_BANK__DATABASE__PORT: 5432
+          NANO_BANK__DATABASE__USERNAME: nanobank_user
+          NANO_BANK__DATABASE__PASSWORD: secure_nano_password_2024!
+          NANO_BANK__DATABASE__DATABASE_NAME: nano_bank_db
+        run: cargo test -- --nocapture
+        working-directory: api
