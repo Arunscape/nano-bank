@@ -360,6 +360,37 @@ function renderAgents() {
     const card = el("div", "card");
     card.appendChild(el("strong", null, a.name + " "));
     card.appendChild(el("span", "mono muted", a.id));
+
+    // Connect ONCE per agent: the registration carries only the agent's own
+    // credentials. The server discovers this agent's mandates live, so every
+    // grant below (any account, any scopes) shows up on Claude's next call —
+    // and a revocation vanishes just as fast. No re-registration ever.
+    const serverName =
+      "nano-bank-" +
+      a.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) +
+      "-" + String(a.id).slice(0, 6);
+    const det = document.createElement("details");
+    const sum = document.createElement("summary");
+    sum.textContent = "Connect Claude Code as this agent (covers ALL its mandates)";
+    sum.style.cursor = "pointer"; sum.style.marginTop = "6px"; sum.style.fontSize = "13px";
+    det.appendChild(sum);
+    det.appendChild(el("div", "muted",
+      "One registration per agent — every mandate you grant it below is " +
+      "picked up automatically. Remove with: claude mcp remove " + serverName));
+    const cmd = document.createElement("textarea");
+    cmd.className = "cmd"; cmd.readOnly = true;
+    cmd.value =
+      `claude mcp add ${serverName} \\\n` +
+      `  --env NANO_BANK_URL=${location.origin} \\\n` +
+      `  --env NANO_BANK_AGENT_ID=${a.id} \\\n` +
+      `  --env NANO_BANK_AGENT_SECRET=${a.secret} \\\n` +
+      `  -- uv run <path-to-repo>/mcp/nano_bank_agent_mcp.py`;
+    const copy = el("button", "secondary", "Copy command");
+    copy.style.marginTop = "6px";
+    copy.onclick = () => { navigator.clipboard.writeText(cmd.value); copy.textContent = "Copied ✓"; };
+    det.append(cmd, copy);
+    card.appendChild(det);
+
     box.appendChild(card);
   }
   const sel = $("m-agent"); sel.innerHTML = "";
@@ -489,44 +520,15 @@ async function loadMandates(justGranted) {
     card.appendChild(actions);
     card.appendChild(actBox);
 
-    // "Connect Claude Code" helper — only possible when this browser session
-    // still knows the agent's secret (it is shown exactly once).
+    // Connection happens ONCE per agent (see the Agents section); a mandate
+    // granted here is picked up by that registration automatically.
     if (agentLocal && m.status === "active") {
-      const det = document.createElement("details");
-      if (m.mandate_id === justGranted) det.open = true;
-      const sum = document.createElement("summary");
-      sum.textContent = "Connect Claude Code to this mandate";
-      sum.style.cursor = "pointer"; sum.style.marginTop = "8px"; sum.style.fontSize = "13px";
-      det.appendChild(sum);
-      // One MCP registration per mandate (one mandate = one account). The
-      // server NAME must be unique per mandate — Claude Code keys servers by
-      // name, so a shared name would silently overwrite the previous mandate's
-      // registration. account-type + mandate prefix keeps it readable.
-      const serverName =
-        "nano-bank-" +
-        (acct ? acct.account_type : "agent") +
-        "-" +
-        String(m.mandate_id).slice(0, 6);
-      const note = el(
+      card.appendChild(el(
         "div",
         "muted",
-        "Each mandate gets its own server name, so several accounts can be " +
-        "connected side by side. Remove this one with: claude mcp remove " + serverName
-      );
-      const cmd = document.createElement("textarea");
-      cmd.className = "cmd"; cmd.readOnly = true;
-      cmd.value =
-        `claude mcp add ${serverName} \\\n` +
-        `  --env NANO_BANK_URL=${location.origin} \\\n` +
-        `  --env NANO_BANK_AGENT_ID=${m.agent_id} \\\n` +
-        `  --env NANO_BANK_AGENT_SECRET=${agentLocal.secret} \\\n` +
-        `  --env NANO_BANK_MANDATE_ID=${m.mandate_id} \\\n` +
-        `  -- uv run <path-to-repo>/mcp/nano_bank_agent_mcp.py`;
-      const copy = el("button", "secondary", "Copy command");
-      copy.style.marginTop = "6px";
-      copy.onclick = () => { navigator.clipboard.writeText(cmd.value); copy.textContent = "Copied ✓"; };
-      det.append(note, cmd, copy);
-      card.appendChild(det);
+        `Covered by the “${agentLocal.name}” Claude Code registration above — ` +
+        "no extra setup; the agent discovers this grant automatically."
+      ));
     }
 
     box.appendChild(card);

@@ -10,9 +10,11 @@ Creates (against a running nano-bank stack):
      history is interesting (skipped with a warning if the GL core is down),
      plus a savings account as the approved payee,
   3. a registered agent named "Claude" (secret captured — shown once!),
-  4. a mandate: read:balance + read:transactions + transfer:initiate with
-     max_per_tx $200, daily_cap $500, payees pinned to the savings account,
-     7-day expiry.
+  4. TWO differently-scoped mandates for that ONE agent (the real-life shape):
+     - chequing: read + transfer:initiate (max_per_tx $200, daily_cap $500,
+       payee pinned to savings),
+     - savings: READ-ONLY.
+     Both 7-day expiry; the MCP server discovers them live.
 
 Writes mcp/.env.demo (gitignored — contains live secrets) and prints the
 `claude mcp add` command, demo prompts, and the ready-made revoke curl.
@@ -102,7 +104,7 @@ def main() -> None:
     agent_id, agent_secret = agent["agent_id"], agent["agent_secret"]
     print(f"✓ agent 'Claude' registered: {agent_id}")
 
-    # 4. The consent act: grant the mandate (reads + bounded transfers)
+    # 4. The consent acts: TWO differently-scoped mandates for ONE agent.
     expires = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=7)).isoformat()
     r = c.post(
         "/api/v1/mandates",
@@ -117,12 +119,25 @@ def main() -> None:
             "expires_at": expires,
         },
     )
-    r.status_code == 201 or die(f"grant mandate: {r.status_code} {r.text}")
+    r.status_code == 201 or die(f"grant chequing mandate: {r.status_code} {r.text}")
     mandate_id = r.json()["mandate_id"]
     print(
-        f"✓ mandate granted: {mandate_id} (reads + transfers ≤ $200/tx, $500/day, "
-        "payee = the savings account, 7 days)"
+        f"✓ chequing mandate: {mandate_id} (reads + transfers ≤ $200/tx, $500/day, "
+        "payee = savings)"
     )
+    r = c.post(
+        "/api/v1/mandates",
+        headers=auth,
+        json={
+            "agent_id": agent_id,
+            "account_id": payee_id,
+            "scopes": ["read:balance", "read:transactions"],
+            "expires_at": expires,
+        },
+    )
+    r.status_code == 201 or die(f"grant savings mandate: {r.status_code} {r.text}")
+    savings_mandate_id = r.json()["mandate_id"]
+    print(f"✓ savings mandate:  {savings_mandate_id} (READ-ONLY)")
 
     # 5. Persist demo state (contains live secrets — gitignored)
     env_file = HERE / ".env.demo"
@@ -132,8 +147,9 @@ def main() -> None:
 NANO_BANK_URL={BASE}
 NANO_BANK_AGENT_ID={agent_id}
 NANO_BANK_AGENT_SECRET={agent_secret}
-NANO_BANK_MANDATE_ID={mandate_id}
 # owner-side (for the revoke step of the demo):
+DEMO_CHEQUING_MANDATE_ID={mandate_id}
+DEMO_SAVINGS_MANDATE_ID={savings_mandate_id}
 DEMO_CUSTOMER_EMAIL={email}
 DEMO_CUSTOMER_TOKEN={token}
 DEMO_ACCOUNT_ID={account_id}
@@ -148,7 +164,6 @@ DEMO_PAYEE_ACCOUNT_ID={payee_id}
         f" --env NANO_BANK_URL={BASE}"
         f" --env NANO_BANK_AGENT_ID={agent_id}"
         f" --env NANO_BANK_AGENT_SECRET={agent_secret}"
-        f" --env NANO_BANK_MANDATE_ID={mandate_id}"
         f" -- uv run {shlex.quote(str(server))}"
     )
     revoke_cmd = (
@@ -165,22 +180,22 @@ NEXT STEPS
 
    {add_cmd}
 
-2. Start a Claude Code session and try:
-   • "Who are you to my bank? Use the nano-bank tools to introduce yourself."
-   • "What's my account balance?"
-   • "Summarize my recent transactions."
-   • "Move $150 into my savings account ({payee_id})."
+2. Start a Claude Code session and try (ONE registration, BOTH accounts):
+   • "What access do you have to my bank?"       → lists both mandates + scopes
+   • "What's my chequing balance? And savings?"  → reads under each mandate
+   • "Move $150 from chequing into my savings ({payee_id})."
    • "Now move $250 more." → POLICY_DENIED (over the $200 per-transaction cap)
-   • Keep going until the $500 daily cap runs out.
-   • "Send $50 to account <any other uuid>." → PAYEE_NOT_ALLOWED
+   • "Transfer $20 FROM my savings." → POLICY_DENIED SCOPE_MISSING (read-only!)
+   • Grant/revoke more mandates in the UI at {BASE}/app — Claude picks up the
+     change on its very next call, no re-registration.
 
 3. THE REVOKE MOMENT — as the account owner, pull consent (customer token,
    not the agent's):
 
    {revoke_cmd}
 
-   …then ask Claude for the balance again: the very next tool call returns
-   MANDATE_INACTIVE. No token blocklist — the mandate row IS the truth.
+   …then ask Claude for the CHEQUING balance again: MANDATE_INACTIVE — while
+   the savings mandate keeps working. Per-grant revocation, live.
 
 4. Audit trail (every decision, allow AND deny):
    kubectl exec -n nano-bank deployment/postgres -- psql -U nanobank_user -d nano_bank_db \\
