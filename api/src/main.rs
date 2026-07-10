@@ -198,6 +198,8 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
         )
         // General-ledger journal posting through the swappable Ledger port
         .nest("/api/v1/ledger", handlers::ledger::ledger_routes())
+        // Lending and loan subsystem
+        .nest("/api/v1/loans", handlers::loans::loan_routes())
         // Security routes
         .nest("/api/v1/security", handlers::security::security_routes())
         // Add middleware layers
