@@ -14,6 +14,7 @@ API_BASE_URL=http://localhost:8081
 2. From within the `ui` directory:
 
 ```bash
+npm install
 npm run dev
 ```
 
