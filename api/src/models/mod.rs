@@ -4,6 +4,7 @@ pub mod agent;
 pub mod auth;
 pub mod customer;
 pub mod interac;
+pub mod loan;
 pub mod lynx;
 pub mod security;
 pub mod transaction;

@@ -5,7 +5,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 use validator::Validate;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "account_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum AccountType {
@@ -14,7 +14,7 @@ pub enum AccountType {
     CreditCard,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "account_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum AccountStatus {
