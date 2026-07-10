@@ -1,0 +1,10 @@
+meta {
+  name: Revoke Mandate
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/aft/mandates/{{mandateId}}
+  auth: inherit
+}

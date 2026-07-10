@@ -1,0 +1,28 @@
+meta {
+  name: Network Inbound Wire
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/v1/lynx/network/inbound
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceToken}}
+}
+
+body:json {
+  {
+    "debtor_name": "Foreign Sender",
+    "debtor_institution": "002",
+    "debtor_account": "999888777",
+    "beneficiary_institution": "900",
+    "beneficiary_transit": "00001",
+    "beneficiary_account": "000000000000",
+    "amount": 40000.00,
+    "remittance_info": "wire settlement"
+  }
+}

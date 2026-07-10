@@ -26,6 +26,8 @@ data:
     psql -h postgres-service -U nanobank_user -d nano_bank_db -f /scripts/06_triggers.sql
     psql -h postgres-service -U nanobank_user -d nano_bank_db -f /scripts/07_rails.sql
     psql -h postgres-service -U nanobank_user -d nano_bank_db -f /scripts/08_interac.sql
+    psql -h postgres-service -U nanobank_user -d nano_bank_db -f /scripts/09_aft.sql
+    psql -h postgres-service -U nanobank_user -d nano_bank_db -f /scripts/10_lynx.sql
 
     echo "Database initialization complete!"
 
