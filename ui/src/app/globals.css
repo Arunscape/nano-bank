@@ -3,6 +3,12 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  --nanobank-blue-sky: #8ecae6;
+  --nanobank-blue-green: #219ebc;
+  --nanobank-blue-deep: #023047;
+  --nanobank-amber-deep: #ffb703;
+  --nanobank-orange-deep: #fb8500;
 }
 
 @theme inline {
@@ -10,6 +16,12 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  --color-nanobank-blue-sky: var(--nanobank-blue-sky);
+  --color-nanobank-blue-green: var(--nanobank-blue-green);
+  --color-nanobank-blue-deep: var(--nanobank-blue-deep);
+  --color-nanobank-amber-deep: var(--nanobank-amber-deep);
+  --color-nanobank-orange-deep: var(--nanobank-orange-deep);
 }
 
 @media (prefers-color-scheme: dark) {
