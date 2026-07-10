@@ -50,6 +50,12 @@ Tools exposed: `whoami`, `get_account_balance`, `get_recent_transactions`, `tran
 Note what's *absent*: there is no *from*-account parameter anywhere — the mandate pins the
 funding account.
 
+**Multiple accounts?** One MCP registration holds exactly one mandate (= one account). To give
+Claude several accounts, register several servers **under distinct names** (the `/app` UI
+generates unique names like `nano-bank-chequing-3f2a9c` per mandate) — a reused name silently
+overwrites the previous registration. The single `nano-bank-agent` name here is fine for this
+one-mandate demo.
+
 ### The payment demo (Phase 2)
 
 The seeded mandate allows transfers **only** to the demo savings account, at most **$200 per

@@ -498,10 +498,25 @@ async function loadMandates(justGranted) {
       sum.textContent = "Connect Claude Code to this mandate";
       sum.style.cursor = "pointer"; sum.style.marginTop = "8px"; sum.style.fontSize = "13px";
       det.appendChild(sum);
+      // One MCP registration per mandate (one mandate = one account). The
+      // server NAME must be unique per mandate — Claude Code keys servers by
+      // name, so a shared name would silently overwrite the previous mandate's
+      // registration. account-type + mandate prefix keeps it readable.
+      const serverName =
+        "nano-bank-" +
+        (acct ? acct.account_type : "agent") +
+        "-" +
+        String(m.mandate_id).slice(0, 6);
+      const note = el(
+        "div",
+        "muted",
+        "Each mandate gets its own server name, so several accounts can be " +
+        "connected side by side. Remove this one with: claude mcp remove " + serverName
+      );
       const cmd = document.createElement("textarea");
       cmd.className = "cmd"; cmd.readOnly = true;
       cmd.value =
-        `claude mcp add nano-bank-agent \\\n` +
+        `claude mcp add ${serverName} \\\n` +
         `  --env NANO_BANK_URL=${location.origin} \\\n` +
         `  --env NANO_BANK_AGENT_ID=${m.agent_id} \\\n` +
         `  --env NANO_BANK_AGENT_SECRET=${agentLocal.secret} \\\n` +
@@ -510,7 +525,7 @@ async function loadMandates(justGranted) {
       const copy = el("button", "secondary", "Copy command");
       copy.style.marginTop = "6px";
       copy.onclick = () => { navigator.clipboard.writeText(cmd.value); copy.textContent = "Copied ✓"; };
-      det.append(cmd, copy);
+      det.append(note, cmd, copy);
       card.appendChild(det);
     }
 
