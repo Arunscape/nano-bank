@@ -168,7 +168,11 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
         // Authentication routes
         .nest("/api/v1/auth", handlers::auth::auth_routes())
         // Customer routes
-        .nest("/api/v1/customers", handlers::customers::customer_routes())
+        .nest(
+            "/api/v1/customers",
+            handlers::customers::customer_routes()
+                .merge(handlers::interac_payees::recipient_routes()),
+        )
         // Account routes
         .nest("/api/v1/accounts", handlers::accounts::account_routes())
         // Agentic banking: agent registration/metadata, consent mandates, and

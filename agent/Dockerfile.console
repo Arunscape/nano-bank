@@ -1,0 +1,9 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . /app/agent
+# `streamlit run agent/console.py` puts the script dir (/app/agent) on
+# sys.path, not /app, so `import agent` fails without this.
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app
+CMD ["streamlit", "run", "agent/console.py", "--server.port=8505", "--server.address=0.0.0.0"]

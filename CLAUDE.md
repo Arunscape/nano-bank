@@ -144,8 +144,18 @@ either backend's account scheme.
 - `api/src/handlers/ledger.rs` — `POST /api/v1/ledger/journal`, `GET /api/v1/ledger/balances`.
 - `api/src/handlers/cards.rs` — the card rails (authorize/capture/settle).
 - `src/core/tables/` — the PostgreSQL DDL (loaded by the Kind init Job).
+- `api/src/handlers/interac_payees.rs` — sender-side **saved Interac payees**
+  (`/api/v1/customers/interac-recipients`), an address book distinct from the
+  Interac rail; sending still goes through `/api/v1/interac/etransfers`.
 - `k8s/` — Kind cluster + Postgres manifests.
 - `testing/` — a 3-container harness (data generator + payment-network sim + viewer).
+- `agent/` — the Python **personal manager**: a GLM/Ollama-cloud LangGraph agent
+  behind a customer-scoped MCP gateway (DB reads + Qdrant memory + two-phase,
+  confirm-gated money movement), plus a skill system and Interac saved-payees +
+  confirm-gated e-Transfer send (over the real rail). Runs in-cluster (its own
+  k8s manifests under `agent/k8s/`); FastAPI A2A on `:8086`, Streamlit console
+  `:8505`. See `agent/README.md`.
+- `scripts/` — lifecycle scripts (`deploy-all.sh`, `setup-k8s.sh`, `start-*.sh`).
 
 ## Running the stack
 

@@ -10,6 +10,7 @@ pub mod customers;
 pub mod docs;
 pub mod health;
 pub mod interac;
+pub mod interac_payees;
 pub mod lynx;
 pub mod ledger;
 pub mod mandates;

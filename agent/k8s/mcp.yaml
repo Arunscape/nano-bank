@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-mcp
+  namespace: nano-bank
+  labels: { app: agent-mcp }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: agent-mcp } }
+  template:
+    metadata: { labels: { app: agent-mcp } }
+    spec:
+      containers:
+      - name: mcp
+        image: nano-agent-mcp:dev
+        imagePullPolicy: Never
+        ports: [ { containerPort: 8087 } ]
+        env:
+        - { name: DB_HOST,        value: postgres-service }
+        - { name: DB_PORT,        value: "5432" }
+        - { name: DB_NAME,        value: nano_bank_db }
+        - { name: DB_USER,        value: nanobank_user }
+        - { name: DB_PASSWORD,    value: "secure_nano_password_2024!" }
+        - { name: QDRANT_URL,     value: http://agent-qdrant:6333 }
+        - { name: QDRANT_COLLECTION, value: nano_manager_memory }
+        - { name: NANO_BANK_API,  value: http://bank-api:8081 }
+        - { name: ACT_MAX_PER_TX, value: "1000" }
+        - { name: CONFIRM_TTL_S,  value: "300" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-mcp
+  namespace: nano-bank
+spec:
+  selector: { app: agent-mcp }
+  ports: [ { port: 8087, targetPort: 8087 } ]

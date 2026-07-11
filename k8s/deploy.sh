@@ -63,6 +63,20 @@ kubectl wait --namespace=nano-bank \
     --for=condition=complete job/init-db \
     --timeout=120s
 
+# --- bank-api (in-cluster), wired cross-cluster to the modern core ---
+echo "🐳 Building + loading bank-api image..."
+docker build -t nano-bank-api:dev ../api
+kind load docker-image nano-bank-api:dev --name nano-bank
+
+echo "🌉 Wiring cross-cluster route to modern-core (host gateway hop)..."
+GATEWAY_IP=$(docker network inspect kind -f '{{range .IPAM.Config}}{{if .Gateway}}{{.Gateway}} {{end}}{{end}}' | awk '{print $1}')
+echo "   host gateway = ${GATEWAY_IP} (core published on host :8191 by cluster modern-core)"
+sed "s/__GATEWAY_IP__/${GATEWAY_IP}/" k8s/modern-core-endpoints.yaml.tmpl | kubectl apply -f -
+
+echo "🏦 Deploying bank-api..."
+kubectl apply -f k8s/bank-api-deployment.yaml
+kubectl -n nano-bank rollout status deploy/bank-api --timeout=180s
+
 echo "🎉 Nano Bank PostgreSQL deployment complete!"
 echo ""
 echo "📊 Connection Details:"
