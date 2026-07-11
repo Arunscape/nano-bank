@@ -34,6 +34,7 @@ Run: uv run mcp/nano_bank_agent_mcp.py   (PEP 723 — uv resolves deps itself)
 
 import os
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -192,6 +193,7 @@ def list_my_access() -> dict[str, Any]:
         "mandates": [
             {
                 "account": _label(m),
+                "account_id": m["account_id"],
                 "scopes": m["scopes"],
                 "max_per_tx": m["max_per_tx"],
                 "daily_cap": m["daily_cap"],
@@ -259,7 +261,7 @@ def get_recent_transactions(account: str = "", limit: int = 10) -> dict[str, Any
 @mcp.tool()
 def transfer(
     from_account: str,
-    to_account_id: str,
+    to_account: str,
     amount: float,
     description: str,
     idempotency_key: str,
@@ -273,6 +275,11 @@ def transfer(
     (MAX_PER_TX_EXCEEDED / DAILY_CAP_EXCEEDED / PAYEE_NOT_ALLOWED); explain it
     to the user rather than retrying. A flat $1.50 fee applies.
 
+    to_account: either another MANDATED account by label/type/last-4 (e.g.
+    "savings" — no id needed) or a full account UUID for any other
+    destination. Never guess a UUID; ask the user for it if the destination
+    isn't one of the mandated accounts.
+
     idempotency_key: REQUIRED. Invent a fresh unique string for each new
     payment, and REUSE the exact same key if you retry the same payment after
     an error/timeout — a sequentially replayed key returns the original
@@ -283,12 +290,31 @@ def transfer(
     if "error" in r:
         return r
     m = r["mandate"]
+
+    # Destination: a raw UUID passes straight through; otherwise resolve it as
+    # one of the mandated accounts (client-side sugar only — the bank still
+    # enforces payees/caps/scopes on the resolved id).
+    to_id = (to_account or "").strip()
+    try:
+        uuid.UUID(to_id)
+    except ValueError:
+        dest = _with_resolved(to_id)
+        if "error" in dest:
+            err = dest["error"]
+            err["message"] = (
+                f"'{to_account}' is not a full account id and doesn't match a "
+                "mandated account. Use a mandated label or ask the user for the "
+                "destination's full account id."
+            )
+            return dest
+        to_id = dest["mandate"]["account_id"]
+
     out = _agent_call(
         m["mandate_id"],
         "POST",
         "/api/v1/agent/transfers",
         body={
-            "to_account_id": to_account_id,
+            "to_account_id": to_id,
             "amount": round(float(amount), 2),
             "description": description,
             "idempotency_key": idempotency_key,
