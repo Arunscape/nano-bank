@@ -8,8 +8,12 @@ per subdirectory.
 | # | Demo | Dir | What it shows |
 |---|------|-----|---------------|
 | 1 | Onboarding | `01-onboarding/` | Create a customer → open accounts → post deposit/withdrawal/transfer, over the consumer API (identity from the customer JWT). |
+| 2 | Activity simulator | `02-simulator/` | Auto-generate customers, accounts (all types), and transactions of every type **including deliberate failures**; register Interac payees + send over the real rail; a final **timestamped event-log** tab streams every API call (green/red). |
 
 _More demos ahead (each gets its own numbered `demos/NN-<name>/`)._
+
+Demos are independent Streamlit apps — run several at once on different ports
+(e.g. demo 1 on `:8510`, demo 2 on `:8511`), all pointing at the same bank API.
 
 ## Running a demo
 
