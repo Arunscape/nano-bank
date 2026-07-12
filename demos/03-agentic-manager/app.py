@@ -1,9 +1,8 @@
-"""Agentic manager console — per-action chats with a left-right conversation view.
+"""Agentic manager console — per-action chat boxes with LangSmith-like traces.
 
 Talks to the personal manager's Branch API (:8086). Seed a demo client, then use
-the action boxes below (each pre-filled with a ready-to-send question and its own
-conversation thread). Messages render left-right — you on the left, the manager on
-the right — with the run's tool/model trace shown inline under each answer.
+three action boxes (open account / register Interac payee / transactions); each
+box is its own conversation thread and shows the manager's run trace.
 
 Config: DEMO_BRANCH_BASE (default http://localhost:8086) + DEMO_BRANCH_TOKEN
 (the BRANCH_SERVICE_TOKEN). See demos/README.md.
@@ -22,19 +21,9 @@ st.set_page_config(page_title="nano-bank · agentic manager", layout="wide")
 ss = st.session_state
 ss.setdefault("clients", [])
 ss.setdefault("cid", None)
-ss.setdefault("cname", "")
 ss.setdefault("threads", {})     # box_key -> thread_id
-ss.setdefault("convo", {})       # box_key -> [ {role, text, trace?, pending?} ]
-
-# The action boxes: (title, key, ready-to-send question)
-BOXES = [
-    ("① Account balance", "balance", "What is my current account balance?"),
-    ("② Advantages of a savings account", "savings",
-     "What are the advantages of opening a savings account?"),
-    ("③ Open account", "open", "Open a savings account for me"),
-    ("④ Register Interac payee", "payee", "Register sam@example.ca as a payee named Sam"),
-    ("⑤ Perform transactions", "txn", "Deposit 100 into my chequing account"),
-]
+ss.setdefault("last", {})        # box_key -> last response dict
+ss.setdefault("pending", {})     # box_key -> pending_action
 
 
 def _post(path, body=None):
@@ -54,25 +43,27 @@ def _get(path):
 
 
 st.title("🤖 nano-bank — agentic manager console")
-st.caption(f"Branch API: `{API}` · seed a client, then chat by action (you ← → manager)")
+st.caption(f"Branch API: `{API}` · seed a client, then chat by action with live traces")
 
-# --- client (no dropdown: seed and use the first client) --------------------
-top = st.columns([1, 2])
-with top[0]:
+# --- client picker ----------------------------------------------------------
+c1, c2 = st.columns([1, 2])
+with c1:
     if st.button("🌱 Seed a demo client"):
-        _, body = _post("/branch/seed")
-        clients = body.get("customers", []) if isinstance(body, dict) else []
-        ss["clients"] = clients
-        ss["cid"] = clients[0]["customer_id"] if clients else None
-        ss["threads"], ss["convo"] = {}, {}     # fresh conversations for the new client
-        _, prof = (_get(f"/branch/clients/{ss['cid']}/profile") if ss["cid"] else (0, {}))
-        ss["cname"] = (f"{prof.get('first_name','')} {prof.get('last_name','')}".strip()
-                       if isinstance(prof, dict) else "")
+        code, body = _post("/branch/seed")
+        ss["clients"] = body.get("customers", []) if isinstance(body, dict) else []
+        if ss["clients"]:
+            ss["cid"] = ss["clients"][0]["customer_id"]
         st.rerun()
-with top[1]:
+    if ss["clients"]:
+        ss["cid"] = st.selectbox("Active client",
+                                 [c["customer_id"] for c in ss["clients"]], index=0)
+with c2:
     if ss["cid"]:
-        st.markdown(f"**Client:** {ss['cname'] or '(client)'} · `{ss['cid'][:8]}`")
+        _, prof = _get(f"/branch/clients/{ss['cid']}/profile")
         _, accts = _get(f"/branch/clients/{ss['cid']}/accounts")
+        if isinstance(prof, dict):
+            st.markdown(f"**Client:** {prof.get('first_name','?')} {prof.get('last_name','')} "
+                        f"· `{ss['cid'][:8]}`")
         if isinstance(accts, list) and accts:
             st.table([{"type": a.get("account_type"), "balance": a.get("balance"),
                        "id": a.get("account_id", "")[:8]} for a in accts])
@@ -82,75 +73,59 @@ if not ss["cid"]:
     st.stop()
 
 
-def _trace_strip(trace):
+def _render_trace(trace):
     if not trace:
-        return None
-    return "trace: " + "  ·  ".join(
-        f"{'🔧' if e['kind'] == 'tool' else '🧠'}{'✅' if e.get('ok') else '❌'} "
-        f"{e['name']} {e['elapsed_ms']}ms" for e in trace)
-
-
-def _render_convo(turns):
-    for t in turns:
-        if t["role"] == "user":
-            left, _ = st.columns([3, 2])
-            with left, st.container(border=True):
-                st.markdown("🧑 **You**")
-                st.write(t["text"])
-        else:
-            _, right = st.columns([2, 3])
-            with right, st.container(border=True):
-                st.markdown("🤖 **Manager**")
-                st.markdown(t["text"])
-                strip = _trace_strip(t.get("trace"))
-                if strip:
-                    st.caption(strip)
+        st.caption("no trace")
+        return
+    for e in trace:
+        icon = "🔧" if e["kind"] == "tool" else "🧠"
+        mark = "✅" if e.get("ok") else "❌"
+        head = f"{icon} {mark} **{e['name']}** · {e['elapsed_ms']}ms"
+        with st.expander(head, expanded=False):
+            if e.get("input"):
+                st.markdown("input"); st.code(e["input"])
+            if e.get("output"):
+                st.markdown("output"); st.code(e["output"])
+            if e.get("error"):
+                st.error(e["error"])
 
 
 def action_box(title, key, default):
     st.subheader(title)
     ss.setdefault(f"in_{key}", default)   # pre-filled, ready to Send (editable)
-    ss["convo"].setdefault(key, [])
-    row = st.columns([6, 1])
-    msg = row[0].text_input("Message", key=f"in_{key}", label_visibility="collapsed")
-    if row[1].button("Send", key=f"send_{key}") and msg:
-        convo = ss["convo"][key]
-        convo.append({"role": "user", "text": msg})
+    msg = st.text_input("Message", key=f"in_{key}")
+    if st.button("Send", key=f"send_{key}") and msg:
         body = {"message": msg}
         if ss["threads"].get(key):
             body["thread_id"] = ss["threads"][key]
-        _, data = _post(f"/branch/clients/{ss['cid']}/message", body)
+        code, data = _post(f"/branch/clients/{ss['cid']}/message", body)
         if isinstance(data, dict):
             ss["threads"][key] = data.get("thread_id", ss["threads"].get(key))
-            convo.append({"role": "manager", "text": data.get("answer", ""),
-                          "trace": data.get("trace"), "pending": data.get("pending_action")})
+            ss["last"][key] = data
+            ss["pending"][key] = data.get("pending_action")
         st.rerun()
-
-    _render_convo(ss["convo"][key])
-
-    # Confirm gate: act on the latest still-pending proposal in this box.
-    pending = next((t["pending"] for t in reversed(ss["convo"][key])
-                    if t["role"] == "manager" and t.get("pending")), None)
-    if pending:
-        st.warning(f"Proposed: {pending.get('summary', pending.get('id'))}")
-        b = st.columns(2)
-        if b[0].button("✅ Confirm", key=f"ok_{key}"):
-            _, rr = _post(f"/branch/clients/{ss['cid']}/actions/{pending['id']}/confirm")
-            for t in ss["convo"][key]:
-                if t["role"] == "manager":
-                    t["pending"] = None
-            ss["convo"][key].append({"role": "manager", "text": "✅ Executed.", "trace": None})
-            st.rerun()
-        if b[1].button("✖ Cancel", key=f"no_{key}"):
-            _post(f"/branch/clients/{ss['cid']}/actions/{pending['id']}/cancel")
-            for t in ss["convo"][key]:
-                if t["role"] == "manager":
-                    t["pending"] = None
-            ss["convo"][key].append({"role": "manager", "text": "✖ Cancelled.", "trace": None})
-            st.rerun()
+    data = ss["last"].get(key)
+    if data:
+        st.markdown(f"**Manager:** {data.get('answer','')}")
+        pa = ss["pending"].get(key)
+        if pa:
+            st.warning(f"Proposed: {pa.get('summary', pa.get('id'))}")
+            b1, b2 = st.columns(2)
+            if b1.button("Confirm", key=f"ok_{key}"):
+                _post(f"/branch/clients/{ss['cid']}/actions/{pa['id']}/confirm")
+                ss["pending"][key] = None
+                st.rerun()
+            if b2.button("Cancel", key=f"no_{key}"):
+                _post(f"/branch/clients/{ss['cid']}/actions/{pa['id']}/cancel")
+                ss["pending"][key] = None
+                st.rerun()
+        with st.expander("🪵 Interaction trace (LangSmith-style)", expanded=True):
+            _render_trace(data.get("trace"))
 
 
-for i, (title, key, default) in enumerate(BOXES):
-    if i:
-        st.divider()
-    action_box(title, key, default)
+action_box("① Open account", "open", "Open a savings account for me")
+st.divider()
+action_box("② Register Interac payee", "payee",
+           "Register sam@example.ca as a payee named Sam")
+st.divider()
+action_box("③ Perform transactions", "txn", "Deposit 100 into my chequing account")
