@@ -11,10 +11,17 @@ use validator::Validate;
 pub const SCOPE_READ_BALANCE: &str = "read:balance";
 pub const SCOPE_READ_TRANSACTIONS: &str = "read:transactions";
 pub const SCOPE_TRANSFER_INITIATE: &str = "transfer:initiate";
-pub const KNOWN_SCOPES: [&str; 3] = [
+// Branch-enforced scopes: the bank stores them on the mandate but exposes no
+// agent-plane endpoint; the agentic branch checks them before routing the
+// operation to the customer REST via the personal manager.
+pub const SCOPE_ACCOUNT_OPEN: &str = "account:open";
+pub const SCOPE_PAYEE_REGISTER: &str = "payee:register";
+pub const KNOWN_SCOPES: [&str; 5] = [
     SCOPE_READ_BALANCE,
     SCOPE_READ_TRANSACTIONS,
     SCOPE_TRANSFER_INITIATE,
+    SCOPE_ACCOUNT_OPEN,
+    SCOPE_PAYEE_REGISTER,
 ];
 
 /// Self-registration request for an agent (`POST /api/v1/agents`).
