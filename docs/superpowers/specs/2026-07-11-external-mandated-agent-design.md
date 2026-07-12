@@ -82,9 +82,11 @@ actions → summary. Lives under `agent/external_agent/` (importable + a thin CL
   where a policy-capable CNI (e.g. Calico) runs; the app-level guarantee stands
   regardless. (Recreating the cluster with Calico was considered and declined — path B.)
 
-## Demo 4 (rewritten)
+## Demo 4 (new)
 
-`demos/04-manager-chat/` becomes the **external-agent console**:
+A **new** `demos/04-external-agent/` — the **external-agent console** (the person's
+manager chat is now demo 3, `demos/03-manager-chat/`, unchanged; it reuses that
+chat styling):
 - Shows the mandate (account, scopes, cap, expiry) the customer granted.
 - A single **high-level instruction** box; the autonomous agent runs and streams its
   steps: every hop through the branch, the **live-mandate check**, the manager's A2A

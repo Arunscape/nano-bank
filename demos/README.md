@@ -9,8 +9,8 @@ per subdirectory.
 |---|------|-----|---------------|
 | 1 | Onboarding | `01-onboarding/` | Create a customer → open accounts → post deposit/withdrawal/transfer, over the consumer API (identity from the customer JWT). |
 | 2 | Activity simulator | `02-simulator/` | Auto-generate customers, accounts (all types), and transactions of every type **including deliberate failures**; register Interac payees + send over the real rail; a final **timestamped event-log** tab streams every API call (green/red). |
-| 3 | Agentic manager | `03-agentic-manager/` | Per-action chat boxes (open account / register Interac payee / transactions) driving the personal manager, each its own thread with a **LangSmith-like run-trace** panel (expanders). Talks to the Branch API (`:8086`). |
-| 4 | Manager chat | `04-manager-chat/` | Same manager, a **left-right conversation** view (you ← → manager) with the run trace inline; five pre-filled boxes incl. **account balance** and **savings-account advice**. Branch API (`:8086`). |
+| 3 | Manager chat | `03-manager-chat/` | The personal manager as a **left-right conversation** (you ← → manager) with the run trace inline; five pre-filled boxes incl. **account balance** and **savings-account advice**. Branch API (`:8086`). |
+| 4 | External mandated agent | `04-external-agent/` | An **autonomous LLM agent** operating a customer's bank **only through the agentic branch**, under a customer-granted **mandate** (scoped, capped, revocable). _(in progress)_ |
 
 _More demos ahead (each gets its own numbered `demos/NN-<name>/`)._
 
