@@ -6,7 +6,6 @@ def test_defaults_when_env_empty():
     s = Settings.from_env({})
     assert s.ollama_base_url == "https://ollama.com/v1"
     assert s.manager_model == "glm-5.2"
-    assert s.manager_fallback_model == "glm-4.7"
     assert s.qdrant_collection == "nano_manager_memory"
     assert s.confirm_ttl_s == 300
     assert s.act_max_per_tx == Decimal("1000")

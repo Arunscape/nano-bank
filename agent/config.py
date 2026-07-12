@@ -10,7 +10,6 @@ class Settings:
     ollama_api_key: str
     ollama_base_url: str
     manager_model: str
-    manager_fallback_model: str
     qdrant_url: str
     qdrant_collection: str
     db: dict
@@ -33,7 +32,6 @@ class Settings:
             ollama_api_key=g("OLLAMA_API_KEY"),
             ollama_base_url=g("OLLAMA_BASE_URL", "https://ollama.com/v1"),
             manager_model=g("MANAGER_MODEL", "glm-5.2"),
-            manager_fallback_model=g("MANAGER_FALLBACK_MODEL", "glm-4.7"),
             qdrant_url=g("QDRANT_URL", "http://localhost:6335"),
             qdrant_collection=g("QDRANT_COLLECTION", "nano_manager_memory"),
             db=dict(

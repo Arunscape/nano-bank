@@ -34,7 +34,7 @@ It runs on **GLM via Ollama-cloud** and is consumed as an **agent-to-agent HTTP 
 - The two Kind clusters up (see the repo-root `CLAUDE.md` + `deploy-all.sh`):
   cluster `nano-bank` (bank-api + Postgres + this agent stack) and cluster
   `modern-core` (the GL core).
-- An `OLLAMA_API_KEY` for `https://ollama.com/v1` (models `glm-5.2` → `glm-4.7` fallback).
+- An `OLLAMA_API_KEY` for `https://ollama.com/v1` (model `glm-5.2`).
 - `docker`, `kind`, `kubectl` (no podman).
 
 ## Run (in Kubernetes)

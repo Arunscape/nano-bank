@@ -35,13 +35,11 @@ def _default_probe(model: str, settings: Settings) -> bool:
 
 def resolve_model(settings: Settings, probe: Optional[Callable[[str, Settings], bool]] = None) -> str:
     probe = probe or _default_probe
-    for model in (settings.manager_model, settings.manager_fallback_model):
-        if probe(model, settings):
-            log.info("resolved model: %s", model)
-            return model
-    raise RuntimeError(
-        f"neither {settings.manager_model} nor {settings.manager_fallback_model} answered at "
-        f"{settings.ollama_base_url}")
+    model = settings.manager_model
+    if probe(model, settings):
+        log.info("resolved model: %s", model)
+        return model
+    raise RuntimeError(f"{model} did not answer at {settings.ollama_base_url}")
 
 
 def init_models(settings: Settings, probe: Optional[Callable[[str, Settings], bool]] = None) -> str:
@@ -64,7 +62,6 @@ def llm(role: str = "fast", *, temperature: float = 0.2, max_tokens: Optional[in
 
 def backend_healthcheck(settings: Settings) -> bool:
     try:
-        return _default_probe(settings.manager_model, settings) or \
-               _default_probe(settings.manager_fallback_model, settings)
+        return _default_probe(settings.manager_model, settings)
     except Exception:  # noqa: BLE001
         return False
