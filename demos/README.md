@@ -9,6 +9,7 @@ per subdirectory.
 |---|------|-----|---------------|
 | 1 | Onboarding | `01-onboarding/` | Create a customer → open accounts → post deposit/withdrawal/transfer, over the consumer API (identity from the customer JWT). |
 | 2 | Activity simulator | `02-simulator/` | Auto-generate customers, accounts (all types), and transactions of every type **including deliberate failures**; register Interac payees + send over the real rail; a final **timestamped event-log** tab streams every API call (green/red). |
+| 3 | Agentic manager | `03-agentic-manager/` | Per-action chat boxes (open account / register Interac payee / transactions) driving the personal manager, each its own thread with a **LangSmith-like run-trace** panel. Talks to the Branch API (`:8086`). |
 
 _More demos ahead (each gets its own numbered `demos/NN-<name>/`)._
 
@@ -34,3 +35,12 @@ DEMO_API_BASE=http://localhost:8081 streamlit run demos/01-onboarding/app.py
 
 (If you run the bank as a host `cargo run`, it's already on `http://localhost:8081`
 and no port-forward is needed.)
+
+Demo 3 talks to the **manager Branch API** (`:8086`), not the bank API directly:
+
+```bash
+kubectl --context kind-nano-bank -n nano-bank port-forward svc/agent-api 8086:8086
+TOKEN=$(grep -E '^BRANCH_SERVICE_TOKEN=' agent/.env | cut -d= -f2-)
+DEMO_BRANCH_BASE=http://localhost:8086 DEMO_BRANCH_TOKEN=$TOKEN \
+  streamlit run demos/03-agentic-manager/app.py
+```
