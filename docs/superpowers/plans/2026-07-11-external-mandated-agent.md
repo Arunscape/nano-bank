@@ -580,12 +580,27 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Files:** Modify `agent/seed.py` (add `seed_agent_mandate`) and expose via `agent/api.py` `POST /agent-gateway/demo-seed`.
 
-**Interfaces:** `seed_agent_mandate(bank, customer_id, customer_token, account_id) -> {agent_id, agent_secret, mandate_id}` — registers an agent and grants a mandate (scopes: all 5; `max_per_tx` e.g. 100; expiry +1h). Returns the binding so the branch can be configured.
+**Interfaces:** `seed_agent_mandate(bank, customer_id, customer_token, account_id) -> {agent_id, agent_secret, mandate_id}` — registers an agent and grants a mandate (scopes: all 5; `max_per_tx` e.g. 100; expiry +1h). Returns the binding so the branch can be configured. Also seeds an **"Epcor Utilities" biller** (a synthetic customer + active chequing account) and returns its `epcor_account_id` — the destination for the agent's bill-payment transfer-out. Configured on the branch as `AGENT_BILLER_ACCOUNT_ID`.
 
 - [ ] **Step 1: Implement the helper**
 
 In `agent/seed.py`:
 ```python
+def _seed_epcor_biller(client):
+    """A stable 'Epcor Utilities' biller: a synthetic customer + active chequing
+    account, the destination for the agent's mandate-capped bill payment."""
+    import uuid
+    tag = uuid.uuid4().hex[:8]
+    cust = client.create_customer({
+        "email": f"epcor.{tag}@biller.nano", "phone_number": f"+1555{uuid.uuid4().int % 10_000_000:07d}",
+        "first_name": "Epcor", "last_name": "Utilities",
+        "date_of_birth": "1990-01-01", "sin": f"{uuid.uuid4().int % 1_000_000_000:09d}",
+        "password": "Biller!" + tag})
+    tok = client.login(cust["email"], "Biller!" + tag)
+    acct = client.create_account(tok, {"account_type": "chequing"})
+    return acct["account_id"]
+
+
 def seed_agent_mandate(client, customer_token, account_id):
     from datetime import datetime, timedelta, timezone
     from .mandate_gateway import MandateClient
@@ -597,8 +612,9 @@ def seed_agent_mandate(client, customer_token, account_id):
                    "account:open", "payee:register"],
         "max_per_tx": "100", "daily_cap": "500",
         "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()})
+    epcor = _seed_epcor_biller(client)
     return {"agent_id": agent["agent_id"], "agent_secret": agent["agent_secret"],
-            "mandate_id": mandate["mandate_id"]}
+            "mandate_id": mandate["mandate_id"], "epcor_account_id": epcor}
 ```
 
 - [ ] **Step 2: Expose a seed endpoint** in `agent/api.py` (behind the gateway token) that seeds a customer+account (reuse `seed_fn`), calls `seed_agent_mandate`, and returns `{customer_id, account_id, agent_id, agent_secret, mandate_id}` so the operator can set the branch env. (Concrete wiring mirrors the existing `/branch/seed`.)
