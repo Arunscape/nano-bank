@@ -721,3 +721,27 @@ Post a PR comment summarizing what changed per finding (#1-#6 fixed, #7 left as 
 **Placeholder scan:** All steps carry concrete code/commands and expected output. The one soft spot is Task 7 Step 5's reliance on manager phrasing — mitigated with a direct-REST fallback in the same step. ✅
 
 **Type consistency:** `_idem_key(op, params)` defined in Task 3 and used only there; `gw_act` returns `decision` ∈ {allow, deny, pending_approval}; `SeedTokenResolver(...)` seam names (`ttl_seconds`, `now`, `login`) match between Task 5 test and impl; `agent_transfer -> (code, body)` tuple consistent across Tasks 3/4 and the existing FakeClient. ✅
+
+---
+
+## Live-verify record (2026-07-14)
+
+Rebuilt & kind-loaded both images (`nano-bank-api:dev`, `nano-agent-api:dev`),
+`rollout restart deploy/bank-api deploy/agent-api`, port-forwarded `svc/agent-api
+:8086` + `svc/bank-api :8081`. Against the deployed pods:
+
+- **#1** `$50` `transfer_out` → `decision:allow http:201` (idempotency in body; transfer posts).
+- **#2** `transfer_out` to a foreign `to_account_id` → `decision:deny http:403 reason:PAYEE_NOT_ALLOWED`
+  (allowed_payees pinned to the seeded Epcor biller; enforced at the bank).
+- **#4** `$50` + five `$100` (cap `$500`) → 4 allow, 5th → `decision:pending_approval http:202`
+  with `approval_id` (parked, money not moved).
+- **#5** customer register → remove (soft-delete) → register **same** email → 2nd register 201, no 409
+  (partial unique index on `status='active'`).
+- **Follow-up (found in live-verify):** `gw_act` collapsed every non-202 into `decision:allow`, so the
+  #2 deny read as `allow http:403`. Fixed to map `code>=400` → `decision:deny` with the bank's reason
+  (commit `04a1dff`, test `test_act_transfer_bank_403_is_deny_not_allow`).
+
+#3 (stable idempotency key) and #6 (10-min token TTL) are unit-verified — internal / time-based,
+impractical to exercise live. `agent/.venv/bin/python -m pytest agent -q` → **79 passed, 1 skipped**.
+
+**#7 (A2A scope granularity) remains out of scope** — a deliberate design decision, flagged to the reviewer.
