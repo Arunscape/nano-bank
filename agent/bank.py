@@ -48,10 +48,12 @@ class BankClient:
     def transfer(self, token, from_account, to_account, amount, memo=None,
                  idempotency_key=None) -> dict:
         # bank-api MoneyTransferRequest requires `description`; the human memo maps to it.
+        # The bank reads idempotency_key from the BODY (never a header), so put it there.
         body = {"from_account_id": from_account, "to_account_id": to_account,
                 "amount": str(amount), "description": memo or "Transfer"}
-        return self._post("/api/v1/transactions/transfer", body,
-                          token=token, idempotency_key=idempotency_key)
+        if idempotency_key:
+            body["idempotency_key"] = idempotency_key
+        return self._post("/api/v1/transactions/transfer", body, token=token)
 
     def send_etransfer(self, token, from_account_id, amount, recipient_handle_value,
                        recipient_handle_type="email", security_question=None,
