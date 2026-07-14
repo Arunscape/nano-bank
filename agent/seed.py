@@ -1,6 +1,8 @@
 from __future__ import annotations
 import uuid
 
+from .mandate_gateway import MandateClient
+
 
 class CredStore:
     def __init__(self):
@@ -51,10 +53,11 @@ def _seed_epcor_biller(bank) -> str:
 
 
 def seed_agent_mandate(bank, customer_token, account_id) -> dict:
-    """Register an external agent and grant it a mandate on `account_id`, plus an
-    Epcor biller account as the bill-payment destination."""
+    """Register an external agent and grant it a mandate on `account_id`, whose
+    ONLY allowed payee is a freshly-seeded Epcor biller — so an LLM-planned
+    destination that isn't Epcor is denied by the bank (PAYEE_NOT_ALLOWED)."""
     from datetime import datetime, timedelta, timezone
-    from .mandate_gateway import MandateClient
+    epcor_account_id = _seed_epcor_biller(bank)   # create biller BEFORE the mandate
     mc = MandateClient(bank.base, "", "")
     agent = mc.register_agent("Demo External Agent")
     mandate = mc.create_mandate(customer_token, {
@@ -62,9 +65,10 @@ def seed_agent_mandate(bank, customer_token, account_id) -> dict:
         "scopes": ["read:balance", "read:transactions", "transfer:initiate",
                    "account:open", "payee:register"],
         "max_per_tx": "100", "daily_cap": "500",
+        "allowed_payees": [epcor_account_id],
         "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()})
     return {"agent_id": agent["agent_id"], "agent_secret": agent["agent_secret"],
-            "mandate_id": mandate["mandate_id"], "epcor_account_id": _seed_epcor_biller(bank)}
+            "mandate_id": mandate["mandate_id"], "epcor_account_id": epcor_account_id}
 
 
 def seed_demo(bank) -> dict:
