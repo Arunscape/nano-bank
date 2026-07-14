@@ -80,6 +80,25 @@ def test_act_transfer_over_cap_is_pending_approval():
     assert body["decision"] == "pending_approval" and body["approval_id"] == "AP1"
 
 
+class _DenyingClient(FakeClient):
+    # The PEP passes (scope + max_per_tx ok) but the bank rejects the payee at
+    # the transaction layer — allowed_payees is enforced there, returning 403.
+    def agent_transfer(self, token, to, amount, desc, idem):
+        return 403, {"error": {"code": "POLICY_DENIED", "message": "PAYEE_NOT_ALLOWED"}}
+
+
+def test_act_transfer_bank_403_is_deny_not_allow():
+    s = Settings.from_env(_ENV)
+    c = TestClient(create_app(s, mandate_client=_DenyingClient(), mandate_pep=FakePEP(True)))
+    r = c.post("/agent-gateway/act", headers={"Authorization": "Bearer gw"},
+               json={"operation": "transfer_out",
+                     "params": {"amount": "25", "to_account_id": "FOREIGN"}})
+    body = r.json()
+    assert body["decision"] == "deny", body
+    assert body["http"] == 403
+    assert "PAYEE_NOT_ALLOWED" in (body.get("reason") or "")
+
+
 def test_act_transfer_uses_supplied_idempotency_key():
     fc = FakeClient()
     fc.keys = []

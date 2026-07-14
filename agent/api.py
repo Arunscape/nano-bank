@@ -197,6 +197,14 @@ def create_app(settings: Settings, *, assist_fn=nano_manager.assist,
             if code == 202:
                 return {"decision": "pending_approval", "operation": op, "http": code,
                         "approval_id": (res or {}).get("approval_id"), "result": res}
+            if code >= 400:
+                # The PEP cleared scope + max_per_tx, but the bank still rejected
+                # at the transaction layer — most often allowed_payees (403
+                # PAYEE_NOT_ALLOWED), which is enforced there, not in the PEP.
+                err = (res or {}).get("error") or {}
+                reason = err.get("message") or err.get("details") or f"bank rejected ({code})"
+                return {"decision": "deny", "operation": op, "http": code,
+                        "reason": reason, "result": res}
             return {"decision": "allow", "operation": op, "http": code, "result": res}
         from .bank import BankClient
         bank = BankClient(settings.nano_bank_api)
