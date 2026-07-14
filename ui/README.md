@@ -5,10 +5,11 @@
 Create a `.env` file in the root of the `ui` directory:
 
 ```bash
-API_BASE_URL=http://localhost:8081
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8081
 ```
 
 ## Running
+Note that Node ≥ 20.9.0 is required for running this app.
 
 1. Ensure the API is running.
 2. From within the `ui` directory:
