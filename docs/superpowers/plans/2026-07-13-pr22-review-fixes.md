@@ -745,3 +745,24 @@ Rebuilt & kind-loaded both images (`nano-bank-api:dev`, `nano-agent-api:dev`),
 impractical to exercise live. `agent/.venv/bin/python -m pytest agent -q` → **79 passed, 1 skipped**.
 
 **#7 (A2A scope granularity) remains out of scope** — a deliberate design decision, flagged to the reviewer.
+
+## Follow-up: idem-key collision on a legitimate repeat (2026-07-14)
+
+blashkar's verification pass approved all six fixes + the bonus, and surfaced the mirror
+image of the #3 double-pay it fixed. `_idem_key = sha1(op + params)` had **no run or date
+component**, and the bank's replay window is **unbounded** (the key identifies a payment
+*intent*, matching on metadata forever). So a *legitimate repeat* collided: re-running
+"pay my $50 Epcor bill" next month — same op, same `{"amount":"50"}` — produced the same
+key, the bank replayed the July transaction (200, original `transaction_id`), and the
+agent reported success while the new bill was never paid. Same for two identical steps in
+one plan.
+
+Fix (`agent/external_agent/agent.py`, test-first): `_idem_key(op, params, run_id, step_idx)`
+mixes in a per-run id (fresh uuid4 per `run()`, injectable) and the plan step index. A
+transport retry *within* a run reuses the same run id + step index → still dedupes (#3
+preserved); a fresh `run()` is a distinct payment; two identical steps in one plan are two
+payments. Pinned by `test_idem_key_differs_across_runs`,
+`test_idem_key_differs_across_steps_in_one_plan`, and the end-to-end
+`test_two_runs_with_identical_params_get_different_keys`. Contained to the external-agent
+driver (client-side key derivation; the gateway already reuses a supplied key), so no image
+rebuild. `pytest agent -q` → **82 passed, 1 skipped**.

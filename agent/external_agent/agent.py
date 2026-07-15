@@ -8,14 +8,25 @@ credentials — only the gateway base + gateway token.
 from __future__ import annotations
 import hashlib
 import json
+import uuid as _uuid
 from typing import Optional
 import httpx
 
 
-def _idem_key(op: str, params: dict) -> str:
-    """Stable per-(op,params) key so a re-run of the same instruction dedupes
-    at the bank instead of double-paying."""
-    payload = json.dumps({"op": op, "params": params}, sort_keys=True, default=str)
+def _idem_key(op: str, params: dict, run_id: str, step_idx: int) -> str:
+    """Idempotency key for one act, scoped to a single (run, step).
+
+    The key is stable within a run+step so a *transport* retry of the same step
+    (httpx timeout after the bank committed) dedupes at the bank instead of
+    double-paying (#3). But it mixes in a per-run id and the plan step index so a
+    *legitimate repeat* does NOT collide: the bank's replay window is unbounded,
+    so without this a re-run of "pay my $50 Epcor bill" next month — same op, same
+    params — would replay last month's transaction and silently skip the new bill.
+    The step index keeps two identical steps in one plan two distinct payments."""
+    payload = json.dumps(
+        {"op": op, "params": params, "run": run_id, "step": step_idx},
+        sort_keys=True, default=str,
+    )
     return hashlib.sha1(payload.encode()).hexdigest()
 
 
@@ -77,12 +88,16 @@ class ExternalAgent:
                 norm.append(("message", s.get("text", "")))
         return norm
 
-    def run(self, instruction: str) -> list[dict]:
-        events = [{"kind": "plan", "instruction": instruction}]
-        for step in self._make_plan(instruction):
+    def run(self, instruction: str, run_id: Optional[str] = None) -> list[dict]:
+        # A fresh run id per invocation makes each run() a distinct payment
+        # intent to the bank; a transport retry within this run reuses the same
+        # id (and step index), so it still dedupes. Injectable for tests.
+        run_id = run_id or _uuid.uuid4().hex
+        events = [{"kind": "plan", "instruction": instruction, "run_id": run_id}]
+        for step_idx, step in enumerate(self._make_plan(instruction)):
             if step[0] == "act":
                 _, op, params = step
-                params = {**params, "idempotency_key": _idem_key(op, params)}
+                params = {**params, "idempotency_key": _idem_key(op, params, run_id, step_idx)}
                 res = self.gw.act(op, params)
                 events.append({"kind": "act", "operation": op, "params": params, "result": res})
             else:
