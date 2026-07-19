@@ -1668,3 +1668,76 @@ async fn reapprove_after_stranded_execution_adopts_the_transaction() {
     assert_eq!(v["status"], "approved");
     assert_eq!(v["transaction_id"].as_str().unwrap(), txn);
 }
+
+#[tokio::test]
+async fn retry_during_execution_maps_to_the_same_ask() {
+    let c = client();
+    require_stack!(&c);
+    let Some(db) = test_db().await else {
+        eprintln!("SKIP: no direct DB access");
+        return;
+    };
+    let (_customer, token) = session(&c).await;
+    let Some(a) = funded_account(&c, &token, 1000.0).await else {
+        return;
+    };
+    let b = create_account(&c, &token, "savings").await;
+    let (agent_id, secret) = register_agent(&c).await;
+    let mandate = grant_transfer_mandate(&c, &token, agent_id, a, 200.0, 500.0, None).await;
+    let atoken = agent_token(&c, agent_id, &secret, mandate).await;
+
+    let key = format!("stepup-{}", Uuid::new_v4());
+    let ask = park(&c, &atoken, b, 250.0, &key).await;
+    let approval_id = ask["approval_id"].as_str().unwrap().to_string();
+
+    // The ask is mid-execution (fresh claim). A retry with the SAME key must
+    // map onto THIS ask — not park a duplicate that could be approved
+    // concurrently and double-pay.
+    sqlx::query(
+        "UPDATE pending_approvals \
+         SET status = 'executing', claimed_at = CURRENT_TIMESTAMP \
+         WHERE approval_id = $1::uuid",
+    )
+    .bind(&approval_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let again = park(&c, &atoken, b, 250.0, &key).await;
+    assert_eq!(
+        again["approval_id"].as_str().unwrap(),
+        approval_id,
+        "retry during execution must return the SAME ask"
+    );
+    assert_eq!(again["status"], "executing", "and report it honestly");
+
+    // The one-open-ask invariant holds in the database itself.
+    let open_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pending_approvals \
+         WHERE mandate_id = $1 AND idempotency_key = $2 \
+           AND status IN ('pending', 'executing')",
+    )
+    .bind(mandate)
+    .bind(&key)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(open_rows, 1, "exactly one open ask per (mandate, key)");
+
+    // And the DB enforces it even against a direct duplicate insert.
+    let dup = sqlx::query(
+        "INSERT INTO pending_approvals \
+         (mandate_id, agent_id, customer_id, account_id, to_account_id, amount, \
+          description, idempotency_key, reason, expires_at) \
+         SELECT mandate_id, agent_id, customer_id, account_id, to_account_id, amount, \
+                description, idempotency_key, reason, expires_at \
+         FROM pending_approvals WHERE approval_id = $1::uuid",
+    )
+    .bind(&approval_id)
+    .execute(&db)
+    .await;
+    assert!(
+        dup.is_err(),
+        "unique index must reject a duplicate open ask: {dup:?}"
+    );
+}

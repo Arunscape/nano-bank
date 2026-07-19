@@ -121,7 +121,11 @@ CREATE TABLE pending_approvals (
 );
 
 -- An agent retry of the same request (mandate + idempotency key) maps onto the
--- same open ask instead of stacking duplicates.
-CREATE UNIQUE INDEX idx_pending_approvals_open_key
-    ON pending_approvals(mandate_id, idempotency_key) WHERE status = 'pending';
+-- same OPEN ask instead of stacking duplicates. "Open" = pending OR executing:
+-- an ask being executed right now must still swallow retries, or a duplicate
+-- row parked during the executing window could be approved concurrently and
+-- double-pay.
+CREATE UNIQUE INDEX idx_pending_approvals_open_ask
+    ON pending_approvals(mandate_id, idempotency_key)
+    WHERE status IN ('pending', 'executing');
 CREATE INDEX idx_pending_approvals_customer ON pending_approvals(customer_id, created_at);

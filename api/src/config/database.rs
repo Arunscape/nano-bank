@@ -163,8 +163,13 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
             resolved_at     TIMESTAMP WITH TIME ZONE
         )
         "#,
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_approvals_open_key \
-         ON pending_approvals(mandate_id, idempotency_key) WHERE status = 'pending'",
+        // The one-open-ask invariant covers pending AND executing (an ask being
+        // executed must still swallow same-key retries). The old pending-only
+        // index is dropped by its former name; the create is idempotent.
+        "DROP INDEX IF EXISTS idx_pending_approvals_open_key",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_approvals_open_ask \
+         ON pending_approvals(mandate_id, idempotency_key) \
+         WHERE status IN ('pending', 'executing')",
         "CREATE INDEX IF NOT EXISTS idx_pending_approvals_customer \
          ON pending_approvals(customer_id, created_at)",
         // Migrate DBs whose CHECK predates the transient 'executing' claim
