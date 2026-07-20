@@ -156,17 +156,38 @@ pub async fn run_migrations(pool: &DatabasePool) -> Result<(), sqlx::Error> {
             idempotency_key VARCHAR(128) NOT NULL,
             reason          TEXT NOT NULL,
             status          VARCHAR(20) NOT NULL DEFAULT 'pending'
-                            CHECK (status IN ('pending', 'approved', 'declined', 'expired')),
+                            CHECK (status IN ('pending', 'executing', 'approved', 'declined', 'expired')),
             transaction_id  UUID,
             created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
             expires_at      TIMESTAMP WITH TIME ZONE NOT NULL,
             resolved_at     TIMESTAMP WITH TIME ZONE
         )
         "#,
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_approvals_open_key \
-         ON pending_approvals(mandate_id, idempotency_key) WHERE status = 'pending'",
+        // The one-open-ask invariant covers pending AND executing (an ask being
+        // executed must still swallow same-key retries). The old pending-only
+        // index is dropped by its former name; the create is idempotent.
+        "DROP INDEX IF EXISTS idx_pending_approvals_open_key",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_approvals_open_ask \
+         ON pending_approvals(mandate_id, idempotency_key) \
+         WHERE status IN ('pending', 'executing')",
         "CREATE INDEX IF NOT EXISTS idx_pending_approvals_customer \
          ON pending_approvals(customer_id, created_at)",
+        // Migrate DBs whose CHECK predates the transient 'executing' claim
+        // state ('approved' is only ever written together with transaction_id).
+        // DROP + re-ADD each boot: the pair is idempotent, and the ADD tolerates
+        // a concurrent boot having re-added it first (duplicate_object).
+        "ALTER TABLE pending_approvals \
+         DROP CONSTRAINT IF EXISTS pending_approvals_status_check",
+        r#"
+        DO $$ BEGIN
+            ALTER TABLE pending_approvals ADD CONSTRAINT pending_approvals_status_check
+            CHECK (status IN ('pending', 'executing', 'approved', 'declined', 'expired'));
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$
+        "#,
+        // Lease marker for the 'executing' claim (timed reclaim of dead claims).
+        "ALTER TABLE pending_approvals ADD COLUMN IF NOT EXISTS \
+         claimed_at TIMESTAMP WITH TIME ZONE",
         // Saved Interac payees (address book). Self-heal for DBs predating the
         // 12_interac_recipients DDL, and migrate the old table-level UNIQUE to a
         // partial unique index so soft-deleted rows don't block re-registration.

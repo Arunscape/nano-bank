@@ -145,8 +145,10 @@ pub struct AgentCredentialsRequest {
 
 /// A step-up approval as seen by the agent that raised it: returned with the
 /// **202** on an over-cap transfer, and by the poll surface
-/// (`GET /api/v1/agent/approvals/{id}`). `transaction_id` appears once the
-/// customer approved and the transfer executed.
+/// (`GET /api/v1/agent/approvals/{id}`). Status contract: `approved` ALWAYS
+/// carries `transaction_id` (they are written atomically) — treat it as final;
+/// the transient `executing` means the owner approved and the transfer is
+/// posting — poll again shortly.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct AgentApprovalStatus {
     pub approval_id: Uuid,

@@ -343,13 +343,16 @@ def transfer(
 
 @mcp.tool()
 def check_approval(approval_id: str, account: str = "") -> dict[str, Any]:
-    """Fate of a parked (step-up) transfer: pending / approved / declined /
-    expired. `approval_id` comes from a transfer that returned
+    """Fate of a parked (step-up) transfer: pending / executing / approved /
+    declined / expired. `approval_id` comes from a transfer that returned
     `pending_approval`. `account` picks the mandate the transfer was FUNDED
     from (same value you passed as from_account); leave empty when only one
-    account is mandated. When approved, the response carries the executed
-    transaction_id — report success to the user. Declined/expired are final:
-    don't retry the payment unless the user explicitly asks again."""
+    account is mandated. `approved` ALWAYS carries the executed
+    transaction_id — treat it as final and report success to the user.
+    `executing` means the owner approved and the transfer is posting — check
+    again shortly, don't report success yet (a stuck `executing` self-heals
+    back to `pending` within ~2 minutes, so keep polling). Declined/expired
+    are final: don't retry the payment unless the user explicitly asks again."""
     r = _with_resolved(account)
     if "error" in r:
         return r

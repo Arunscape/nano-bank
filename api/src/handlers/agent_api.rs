@@ -165,10 +165,12 @@ async fn post_mandated_transfer(
     }
 
     // Step-up retry (Phase 3): the same request may already be parked awaiting
-    // the owner's decision — hand back the same open ask, don't stack another.
+    // the owner's decision — or being executed right now — hand back the same
+    // OPEN ask (pending or executing), don't stack another.
     if let Some(open) = sqlx::query_as::<_, AgentApprovalStatus>(&format!(
         "SELECT {AGENT_APPROVAL_COLUMNS} FROM pending_approvals \
-         WHERE mandate_id = $1 AND idempotency_key = $2 AND status = 'pending' \
+         WHERE mandate_id = $1 AND idempotency_key = $2 \
+           AND status IN ('pending', 'executing') \
            AND expires_at > CURRENT_TIMESTAMP",
     ))
     .bind(agent.mandate_id)
@@ -269,7 +271,8 @@ async fn park_pending_approval(
           description, idempotency_key, reason, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, \
                  CURRENT_TIMESTAMP + $10 * INTERVAL '1 minute') \
-         ON CONFLICT (mandate_id, idempotency_key) WHERE status = 'pending' DO NOTHING \
+         ON CONFLICT (mandate_id, idempotency_key) \
+         WHERE status IN ('pending', 'executing') DO NOTHING \
          RETURNING {AGENT_APPROVAL_COLUMNS}",
     ))
     .bind(agent.mandate_id)
@@ -290,10 +293,13 @@ async fn park_pending_approval(
             %amount, reason, "⏸ transfer parked for step-up approval");
         return Ok(created);
     }
-    // Lost a tight race: the concurrent duplicate already parked this ask.
+    // Lost a tight race: the same ask is already open (parked by a concurrent
+    // duplicate, or mid-execution). No expiry filter here — this is the safety
+    // net after an insert conflict, so return whatever open ask exists.
     sqlx::query_as::<_, AgentApprovalStatus>(&format!(
         "SELECT {AGENT_APPROVAL_COLUMNS} FROM pending_approvals \
-         WHERE mandate_id = $1 AND idempotency_key = $2 AND status = 'pending'",
+         WHERE mandate_id = $1 AND idempotency_key = $2 \
+           AND status IN ('pending', 'executing')",
     ))
     .bind(agent.mandate_id)
     .bind(&req.idempotency_key)
@@ -310,7 +316,20 @@ async fn get_approval_status(
     agent: AuthenticatedAgent,
     Path(approval_id): Path<Uuid>,
 ) -> Result<Json<AgentApprovalStatus>, AppError> {
-    // Lazy expiry, same idiom as the customer surface.
+    // Lazy reclaim-then-expire, same idiom as the customer surface — the agent
+    // polling is the other liveness path (an abandoned claim must become
+    // actionable even if the customer never opens /app).
+    sqlx::query(
+        "UPDATE pending_approvals \
+         SET status = 'pending', claimed_at = NULL \
+         WHERE approval_id = $1 AND status = 'executing' AND transaction_id IS NULL \
+           AND claimed_at <= CURRENT_TIMESTAMP - $2 * INTERVAL '1 second'",
+    )
+    .bind(approval_id)
+    .bind(crate::handlers::approvals::RECLAIM_AFTER_SECONDS)
+    .execute(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
     sqlx::query(
         "UPDATE pending_approvals \
          SET status = 'expired', resolved_at = CURRENT_TIMESTAMP \

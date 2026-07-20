@@ -156,7 +156,8 @@ pub async fn api_docs() -> Result<Html<String>, StatusCode> {
     </div>
     <div class="endpoint">
         <span class="method get">GET</span> <code>/api/v1/agent/approvals/{id}</code><br>
-        Poll a parked transfer's fate (agent token, pinned to its mandate)
+        Poll a parked transfer's fate (agent token, pinned to its mandate).
+        <code>approved</code> always carries <code>transaction_id</code> — final; <code>executing</code> = posting, poll again
     </div>
     <div class="endpoint">
         <span class="method get">GET</span> <code>/api/v1/approvals</code><br>

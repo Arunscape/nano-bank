@@ -7,6 +7,14 @@
 //! the transfer with the caps overridden for that one transfer — every other
 //! check (mandate active, scope, payee allowlist, funds, account limits) still
 //! runs. Decline kills it. Unresolved asks expire lazily on read/resolve.
+//!
+//! Status contract: `pending → executing → approved | pending(revert)`, or
+//! `pending → declined | expired`. `approved` always carries `transaction_id`
+//! (written atomically); `executing` is the short in-flight claim — never swept
+//! by expiry, but **reclaimed** back to `pending` once `claimed_at` ages past
+//! the lease window (a crash mid-execution can't strand the ask). Re-approve
+//! after a reclaim is safe: the approve path first finalizes by idempotency
+//! key, so money that already moved is adopted, never re-sent.
 
 use axum::{
     extract::{Path, Query, State},
@@ -21,7 +29,10 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::handlers::agent_api::transfer_failure_reason;
-use crate::handlers::transactions::{execute_transfer, AgentTransferCtx, TransferSpec};
+use crate::handlers::transactions::{
+    execute_transfer, find_by_idempotency_key, load_transaction_response, AgentTransferCtx,
+    TransferSpec,
+};
 use crate::handlers::AppState;
 use crate::middleware::auth::AuthenticatedCustomer;
 use crate::models::agent::PendingApprovalResponse;
@@ -47,12 +58,31 @@ const APPROVAL_FROM: &str = "FROM pending_approvals p \
      JOIN agents a ON a.agent_id = p.agent_id \
      JOIN accounts ac ON ac.account_id = p.account_id";
 
-/// Flip the customer's overdue open asks to `expired` — called before every
-/// read/resolve so nobody ever acts on a stale row (no sweeper needed).
+/// How long an `executing` claim may live before it is presumed dead and
+/// reclaimed. 3× the 30s request timeout: an execution still in flight can't
+/// outlive its request by that much.
+pub(crate) const RECLAIM_AFTER_SECONDS: i32 = 90;
+
+/// Reclaim-then-expire, called before every read/resolve so nobody ever acts
+/// on a stale row (no sweeper needed): first revert dead `executing` claims
+/// (crashed executor — the lease timed out) back to `pending`, then flip
+/// overdue open asks to `expired`. Order matters: a reclaimed row already past
+/// its `expires_at` correctly cascades to expired in the second statement.
 async fn expire_overdue(
     pool: &crate::config::database::DatabasePool,
     customer_id: Uuid,
 ) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE pending_approvals \
+         SET status = 'pending', claimed_at = NULL \
+         WHERE customer_id = $1 AND status = 'executing' AND transaction_id IS NULL \
+           AND claimed_at <= CURRENT_TIMESTAMP - $2 * INTERVAL '1 second'",
+    )
+    .bind(customer_id)
+    .bind(RECLAIM_AFTER_SECONDS)
+    .execute(pool)
+    .await
+    .map_err(AppError::Database)?;
     sqlx::query(
         "UPDATE pending_approvals \
          SET status = 'expired', resolved_at = CURRENT_TIMESTAMP \
@@ -106,10 +136,63 @@ struct ClaimedApproval {
     idempotency_key: String,
 }
 
+/// The atomic finalization: `approved` is born WITH its transaction_id — one
+/// write, guarded on the claim still being ours. If it matches 0 rows the
+/// lease was reclaimed (and possibly re-resolved) while we executed — the
+/// money response is still returned honestly, but the loser backs off: no
+/// audit row (the winning resolution owns the trail) and a loud warning.
+async fn finalize_approved(
+    state: &AppState,
+    approval_id: Uuid,
+    claim: &ClaimedApproval,
+    customer_id: Uuid,
+    resp: &TransactionResponse,
+) -> Result<(), AppError> {
+    let updated = sqlx::query(
+        "UPDATE pending_approvals \
+         SET status = 'approved', transaction_id = $2, \
+             resolved_at = CURRENT_TIMESTAMP, claimed_at = NULL \
+         WHERE approval_id = $1 AND status = 'executing'",
+    )
+    .bind(approval_id)
+    .bind(resp.transaction_id)
+    .execute(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    if updated.rows_affected() != 1 {
+        tracing::warn!(approval_id = %approval_id, transaction_id = %resp.transaction_id,
+            "step-up finalize lost its claim (reclaimed mid-execution) — money moved, \
+             state owned by the other resolution");
+        return Ok(());
+    }
+    policy::record_action(
+        &state.pool,
+        claim.mandate_id,
+        claim.agent_id,
+        customer_id,
+        claim.account_id,
+        "transfer",
+        Some(claim.amount),
+        "allowed",
+        Some(policy::REASON_STEP_UP_APPROVED),
+        Some(resp.transaction_id),
+    )
+    .await
+    .map_err(AppError::Database)?;
+    tracing::info!(approval_id = %approval_id, transaction_id = %resp.transaction_id,
+        "✅ step-up approval executed");
+    Ok(())
+}
+
 /// Approve a parked transfer: claim the row (guarded, race-safe), then execute
 /// with the caps overridden — this consent IS the authorization for the
-/// overage. On an execution failure the claim reverts to `pending` (with the
-/// failure audited), so the owner can fund the account and retry, or decline.
+/// overage. The claim state is the transient `executing`, NOT `approved`:
+/// `approved` is only ever written together with `transaction_id`, so a
+/// polling agent can treat approved as final — there is no observable
+/// approved-with-no-transaction window. On an execution failure the claim
+/// reverts to `pending` (with the failure audited), so the owner can fund the
+/// account and retry, or decline.
 async fn approve_approval(
     State(state): State<AppState>,
     auth: AuthenticatedCustomer,
@@ -117,11 +200,12 @@ async fn approve_approval(
 ) -> Result<(StatusCode, Json<TransactionResponse>), AppError> {
     expire_overdue(&state.pool, auth.customer_id).await?;
 
-    // Guarded claim: only one approver wins; a lost race / resolved row is a
-    // clean 409, someone else's approval is a 404 (no existence leak).
+    // Guarded claim: only one approver wins; a lost race / resolved / already
+    // in-flight row is a clean 409, someone else's approval is a 404 (no
+    // existence leak).
     let claimed = sqlx::query_as::<_, ClaimedApproval>(
         "UPDATE pending_approvals \
-         SET status = 'approved', resolved_at = CURRENT_TIMESTAMP \
+         SET status = 'executing', claimed_at = CURRENT_TIMESTAMP \
          WHERE approval_id = $1 AND customer_id = $2 AND status = 'pending' \
          RETURNING mandate_id, agent_id, account_id, to_account_id, amount, \
                    description, idempotency_key",
@@ -149,6 +233,26 @@ async fn approve_approval(
         };
     };
 
+    // At-least-once safety (the reclaim makes re-approve possible): if a
+    // previous stranded attempt already moved the money — executed, then
+    // crashed before the approved-write — ADOPT that transaction instead of
+    // paying again. The key is namespaced to this mandate, so it can only ever
+    // surface this approval's own transfer.
+    if let Some(existing) = find_by_idempotency_key(
+        &state.pool,
+        &claim.idempotency_key,
+        auth.customer_id,
+        Some(claim.mandate_id),
+    )
+    .await?
+    {
+        let resp = load_transaction_response(&state.pool, existing).await?;
+        finalize_approved(&state, approval_id, &claim, auth.customer_id, &resp).await?;
+        tracing::info!(approval_id = %approval_id, transaction_id = %existing,
+            "♻️ step-up approval finalized from a prior stranded execution");
+        return Ok((StatusCode::OK, Json(resp)));
+    }
+
     let result = execute_transfer(
         &state,
         auth.customer_id,
@@ -170,36 +274,15 @@ async fn approve_approval(
 
     match result {
         Ok(resp) => {
-            sqlx::query("UPDATE pending_approvals SET transaction_id = $2 WHERE approval_id = $1")
-                .bind(approval_id)
-                .bind(resp.transaction_id)
-                .execute(&state.pool)
-                .await
-                .map_err(AppError::Database)?;
-            policy::record_action(
-                &state.pool,
-                claim.mandate_id,
-                claim.agent_id,
-                auth.customer_id,
-                claim.account_id,
-                "transfer",
-                Some(claim.amount),
-                "allowed",
-                Some(policy::REASON_STEP_UP_APPROVED),
-                Some(resp.transaction_id),
-            )
-            .await
-            .map_err(AppError::Database)?;
-            tracing::info!(approval_id = %approval_id, transaction_id = %resp.transaction_id,
-                "✅ step-up approval executed");
+            finalize_approved(&state, approval_id, &claim, auth.customer_id, &resp).await?;
             Ok((StatusCode::CREATED, Json(resp)))
         }
         Err(err) => {
             // Revert the claim so the ask stays actionable (expiry still applies).
             sqlx::query(
                 "UPDATE pending_approvals \
-                 SET status = 'pending', resolved_at = NULL \
-                 WHERE approval_id = $1 AND status = 'approved' AND transaction_id IS NULL",
+                 SET status = 'pending', claimed_at = NULL \
+                 WHERE approval_id = $1 AND status = 'executing' AND transaction_id IS NULL",
             )
             .bind(approval_id)
             .execute(&state.pool)
