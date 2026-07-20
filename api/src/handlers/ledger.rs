@@ -71,21 +71,13 @@ async fn post_journal(
             })
             .collect(),
     };
-    let posted = state
-        .ledger
-        .post_entry(entry)
-        .await
-        .map_err(ledger_error)?;
+    let posted = state.ledger.post_entry(entry).await.map_err(ledger_error)?;
     Ok(Json(posted))
 }
 
 async fn get_balances(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AccountBalance>>, AppError> {
-    let balances = state
-        .ledger
-        .balances()
-        .await
-        .map_err(ledger_error)?;
+    let balances = state.ledger.balances().await.map_err(ledger_error)?;
     Ok(Json(balances))
 }

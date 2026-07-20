@@ -209,8 +209,16 @@ async fn initiate_wire(
     .await?;
     match ok {
         Some((true, true)) => {}
-        Some(_) => return Err(AppError::BadRequest("institution is not Lynx-capable".into())),
-        None => return Err(AppError::BadRequest("unknown counterparty institution".into())),
+        Some(_) => {
+            return Err(AppError::BadRequest(
+                "institution is not Lynx-capable".into(),
+            ))
+        }
+        None => {
+            return Err(AppError::BadRequest(
+                "unknown counterparty institution".into(),
+            ))
+        }
     }
 
     let rail = resolve_lynx(&state).await?;
@@ -219,7 +227,10 @@ async fn initiate_wire(
     let account = fetch_account_for_update(&mut tx, req.from_account_id)
         .await?
         .ok_or_else(|| AppError::NotFound("account not found".into()))?;
-    if !matches!(account.status, crate::models::account::AccountStatus::Active) {
+    if !matches!(
+        account.status,
+        crate::models::account::AccountStatus::Active
+    ) {
         return Err(AppError::BadRequest("account is not active".into()));
     }
     if account.available_balance < amount {
@@ -283,7 +294,19 @@ async fn list_wires(
 ) -> Result<Json<Vec<WireResponse>>, AppError> {
     let rows = sqlx::query_as::<
         _,
-        (Uuid, Uuid, String, String, Decimal, String, String, String, String, String, Option<String>),
+        (
+            Uuid,
+            Uuid,
+            String,
+            String,
+            Decimal,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+        ),
     >(
         "SELECT wire_id, uetr, direction::text, status::text, amount, currency, \
          counterparty_name, counterparty_institution, message_type, reference_number, gl_entry \
@@ -296,9 +319,17 @@ async fn list_wires(
     Ok(Json(
         rows.into_iter()
             .map(|r| WireResponse {
-                wire_id: r.0, uetr: r.1, direction: r.2, status: r.3, amount: r.4, currency: r.5,
-                counterparty_name: r.6, counterparty_institution: r.7, message_type: r.8,
-                reference_number: r.9, gl_entry: r.10,
+                wire_id: r.0,
+                uetr: r.1,
+                direction: r.2,
+                status: r.3,
+                amount: r.4,
+                currency: r.5,
+                counterparty_name: r.6,
+                counterparty_institution: r.7,
+                message_type: r.8,
+                reference_number: r.9,
+                gl_entry: r.10,
             })
             .collect(),
     ))
@@ -460,7 +491,9 @@ async fn network_settle(
     tx.commit().await?;
 
     tracing::info!(%wire_id, "🌐 Lynx wire settled (final)");
-    Ok(Json(serde_json::json!({ "wire_id": wire_id, "status": "settled" })))
+    Ok(Json(
+        serde_json::json!({ "wire_id": wire_id, "status": "settled" }),
+    ))
 }
 
 /// An inbound wire arriving from the network → credit the beneficiary customer.
@@ -490,7 +523,11 @@ async fn network_inbound(
     recompute_available(&mut tx, acct).await?;
 
     let uetr = req.uetr.unwrap_or_else(Uuid::new_v4);
-    let message_type = req.message_type.as_deref().unwrap_or("pacs.008").to_string();
+    let message_type = req
+        .message_type
+        .as_deref()
+        .unwrap_or("pacs.008")
+        .to_string();
     let msg = CreditTransfer {
         uetr: uetr.to_string(),
         debtor_name: req.debtor_name.clone(),
@@ -537,7 +574,8 @@ async fn network_inbound(
     let wire_id = match inserted {
         Ok(id) => id,
         Err(e) => {
-            let dup = matches!(&e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"));
+            let dup =
+                matches!(&e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"));
             if dup {
                 tx.rollback().await?;
                 let existing: Uuid =
@@ -546,7 +584,10 @@ async fn network_inbound(
                         .fetch_one(&state.pool)
                         .await?;
                 tracing::info!(%existing, %uetr, "🌐 Lynx inbound wire replayed (duplicate uetr)");
-                return Ok((StatusCode::CREATED, Json(load_wire(&state, existing).await?)));
+                return Ok((
+                    StatusCode::CREATED,
+                    Json(load_wire(&state, existing).await?),
+                ));
             }
             return Err(AppError::from(e));
         }
@@ -606,8 +647,14 @@ async fn network_recall_resolve(
         .await?;
 
     let wire_status = if accept {
-        rail.accept_inbound(&state, &mut tx, local_account_id, amount, "Lynx recall refund")
-            .await?;
+        rail.accept_inbound(
+            &state,
+            &mut tx,
+            local_account_id,
+            amount,
+            "Lynx recall refund",
+        )
+        .await?;
         recompute_available(&mut tx, local_account_id).await?;
         sqlx::query("UPDATE lynx_wires SET status='recalled' WHERE wire_id=$1")
             .bind(wire_id)
@@ -651,7 +698,10 @@ async fn network_inbound_recall(
     let camt056 = Camt056 {
         uetr: Uuid::new_v4().to_string(),
         original_uetr: uetr.to_string(),
-        reason: req.reason.clone().unwrap_or_else(|| "sender request".into()),
+        reason: req
+            .reason
+            .clone()
+            .unwrap_or_else(|| "sender request".into()),
     };
     let msg056 = store_message(
         &mut tx,
@@ -663,36 +713,41 @@ async fn network_inbound_recall(
     .await?;
 
     // Decide accept vs reject (reject if the beneficiary can't cover the clawback).
-    let (recall_status, camt029_status, resolution): (&str, &str, String) = if req.decision
-        == "accept"
-    {
-        let acct = fetch_account_for_update(&mut tx, local_account_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("beneficiary account gone".into()))?;
-        if acct.available_balance < amount {
-            ("rejected", "RJCR", "insufficient funds".into())
+    let (recall_status, camt029_status, resolution): (&str, &str, String) =
+        if req.decision == "accept" {
+            let acct = fetch_account_for_update(&mut tx, local_account_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound("beneficiary account gone".into()))?;
+            if acct.available_balance < amount {
+                ("rejected", "RJCR", "insufficient funds".into())
+            } else {
+                zero_available(&mut tx, local_account_id).await?;
+                rail.clawback(
+                    &state,
+                    &mut tx,
+                    local_account_id,
+                    amount,
+                    "Lynx inbound recall",
+                )
+                .await?;
+                recompute_available(&mut tx, local_account_id).await?;
+                sqlx::query("UPDATE lynx_wires SET status='recalled' WHERE wire_id=$1")
+                    .bind(req.wire_id)
+                    .execute(&mut *tx)
+                    .await?;
+                (
+                    "accepted",
+                    "ACCP",
+                    req.reason.clone().unwrap_or_else(|| "returned".into()),
+                )
+            }
         } else {
-            zero_available(&mut tx, local_account_id).await?;
-            rail.clawback(&state, &mut tx, local_account_id, amount, "Lynx inbound recall")
-                .await?;
-            recompute_available(&mut tx, local_account_id).await?;
-            sqlx::query("UPDATE lynx_wires SET status='recalled' WHERE wire_id=$1")
-                .bind(req.wire_id)
-                .execute(&mut *tx)
-                .await?;
             (
-                "accepted",
-                "ACCP",
-                req.reason.clone().unwrap_or_else(|| "returned".into()),
+                "rejected",
+                "RJCR",
+                req.reason.clone().unwrap_or_else(|| "declined".into()),
             )
-        }
-    } else {
-        (
-            "rejected",
-            "RJCR",
-            req.reason.clone().unwrap_or_else(|| "declined".into()),
-        )
-    };
+        };
 
     let camt029 = Camt029 {
         uetr: Uuid::new_v4().to_string(),

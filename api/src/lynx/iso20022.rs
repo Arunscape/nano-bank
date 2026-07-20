@@ -162,10 +162,22 @@ fn decode_credit_transfer(xml: &str) -> Result<CreditTransfer, Iso20022Error> {
         uetr: required(xml, "UETR")?.to_string(),
         debtor_name: xml_unescape(required(dbtr_block, "Nm")?),
         debtor_agent: required(required(xml, "DbtrAgt")?, "MmbId")?.to_string(),
-        debtor_account: xml_unescape(required(dbtr_acct_block, "Id")?.trim_start_matches("<Othr><Id>").split("</Id>").next().unwrap_or("")),
+        debtor_account: xml_unescape(
+            required(dbtr_acct_block, "Id")?
+                .trim_start_matches("<Othr><Id>")
+                .split("</Id>")
+                .next()
+                .unwrap_or(""),
+        ),
         creditor_name: xml_unescape(required(cdtr_block, "Nm")?),
         creditor_agent: required(required(xml, "CdtrAgt")?, "MmbId")?.to_string(),
-        creditor_account: xml_unescape(required(cdtr_acct_block, "Id")?.trim_start_matches("<Othr><Id>").split("</Id>").next().unwrap_or("")),
+        creditor_account: xml_unescape(
+            required(cdtr_acct_block, "Id")?
+                .trim_start_matches("<Othr><Id>")
+                .split("</Id>")
+                .next()
+                .unwrap_or(""),
+        ),
         amount,
         currency: ccy,
         remittance: tag(xml, "Ustrd").map(xml_unescape),

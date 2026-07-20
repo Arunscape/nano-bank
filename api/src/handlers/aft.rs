@@ -18,7 +18,9 @@ use validator::Validate;
 
 use crate::aft::cpa005;
 use crate::errors::AppError;
-use crate::handlers::cards::{fetch_account_for_update, normalize_amount, post_gl_entry, reference_number};
+use crate::handlers::cards::{
+    fetch_account_for_update, normalize_amount, post_gl_entry, reference_number,
+};
 use crate::handlers::AppState;
 use crate::ledger::Account as GlAccount;
 use crate::middleware::auth::{AuthenticatedCustomer, AuthenticatedService};
@@ -131,8 +133,13 @@ async fn load_batch(state: &AppState, batch_id: Uuid) -> Result<BatchResponse, A
     .fetch_one(&state.pool)
     .await?;
     Ok(BatchResponse {
-        batch_id: r.0, direction: r.1, status: r.2, entry_count: r.3,
-        total_credits: r.4, total_debits: r.5, file_ref: r.6,
+        batch_id: r.0,
+        direction: r.1,
+        status: r.2,
+        entry_count: r.3,
+        total_credits: r.4,
+        total_debits: r.5,
+        file_ref: r.6,
     })
 }
 
@@ -145,8 +152,14 @@ async fn load_entry(state: &AppState, entry_id: Uuid) -> Result<EntryResponse, A
     .fetch_one(&state.pool)
     .await?;
     Ok(EntryResponse {
-        entry_id: r.0, batch_id: r.1, kind: r.2, direction: r.3,
-        amount: r.4, status: r.5, payee_name: r.6, return_reason: r.7,
+        entry_id: r.0,
+        batch_id: r.1,
+        kind: r.2,
+        direction: r.3,
+        amount: r.4,
+        status: r.5,
+        payee_name: r.6,
+        return_reason: r.7,
     })
 }
 
@@ -176,9 +189,7 @@ async fn load_entry_by_key(
 fn originate_conflict(e: sqlx::Error) -> AppError {
     if let sqlx::Error::Database(db) = &e {
         match db.code().as_deref() {
-            Some("23505") => {
-                return AppError::Conflict("idempotency_key already used".into())
-            }
+            Some("23505") => return AppError::Conflict("idempotency_key already used".into()),
             Some("23503") => {
                 return AppError::BadRequest("unknown counterparty institution".into())
             }
@@ -188,7 +199,11 @@ fn originate_conflict(e: sqlx::Error) -> AppError {
     AppError::from(e)
 }
 
-async fn caller_owns_account(state: &AppState, account_id: Uuid, customer_id: Uuid) -> Result<bool, AppError> {
+async fn caller_owns_account(
+    state: &AppState,
+    account_id: Uuid,
+    customer_id: Uuid,
+) -> Result<bool, AppError> {
     Ok(sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM accounts WHERE account_id=$1 AND customer_id=$2)",
     )
@@ -255,16 +270,18 @@ async fn create_mandate(
     }
     // The authorized biller account must exist. (It belongs to the biller, not
     // the caller, so we only check existence — a bad id is a 400, not a 404.)
-    let biller_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM accounts WHERE account_id=$1)",
-    )
-    .bind(req.biller_account_id)
-    .fetch_one(&state.pool)
-    .await?;
+    let biller_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE account_id=$1)")
+            .bind(req.biller_account_id)
+            .fetch_one(&state.pool)
+            .await?;
     if !biller_exists {
         return Err(AppError::BadRequest("biller account not found".into()));
     }
-    let freq = req.frequency.clone().unwrap_or_else(|| "monthly".to_string());
+    let freq = req
+        .frequency
+        .clone()
+        .unwrap_or_else(|| "monthly".to_string());
     let row = sqlx::query_as::<_, (Uuid, String)>(
         "INSERT INTO pad_mandates (payer_account_id, biller_account_id, biller_name, originator_id, amount_cap, frequency) \
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING mandate_id, status::text",
@@ -344,7 +361,9 @@ async fn create_credit(
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
     if amount > max_cpa_amount() {
-        return Err(AppError::BadRequest("amount exceeds AFT file field limit".into()));
+        return Err(AppError::BadRequest(
+            "amount exceeds AFT file field limit".into(),
+        ));
     }
     if !caller_owns_account(&state, req.originator_account_id, caller.customer_id).await? {
         return Err(AppError::NotFound("originator account not found".into()));
@@ -375,7 +394,10 @@ async fn create_credit(
     .map_err(originate_conflict)?;
     bump_batch(&mut tx, batch_id, amount, Decimal::ZERO).await?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(load_entry(&state, entry_id).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(load_entry(&state, entry_id).await?),
+    ))
 }
 
 async fn create_debit(
@@ -386,7 +408,9 @@ async fn create_debit(
     req.validate()?;
     let amount = normalize_amount(req.amount)?;
     if amount > max_cpa_amount() {
-        return Err(AppError::BadRequest("amount exceeds AFT file field limit".into()));
+        return Err(AppError::BadRequest(
+            "amount exceeds AFT file field limit".into(),
+        ));
     }
     // The biller's collecting account must belong to the caller.
     if !caller_owns_account(&state, req.originator_account_id, caller.customer_id).await? {
@@ -447,7 +471,10 @@ async fn create_debit(
     .map_err(originate_conflict)?;
     bump_batch(&mut tx, batch_id, Decimal::ZERO, amount).await?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(load_entry(&state, entry_id).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(load_entry(&state, entry_id).await?),
+    ))
 }
 async fn list_batches(
     State(state): State<AppState>,
@@ -465,8 +492,13 @@ async fn list_batches(
     Ok(Json(
         rows.into_iter()
             .map(|r| BatchResponse {
-                batch_id: r.0, direction: r.1, status: r.2, entry_count: r.3,
-                total_credits: r.4, total_debits: r.5, file_ref: r.6,
+                batch_id: r.0,
+                direction: r.1,
+                status: r.2,
+                entry_count: r.3,
+                total_credits: r.4,
+                total_debits: r.5,
+                file_ref: r.6,
             })
             .collect(),
     ))
@@ -487,7 +519,17 @@ async fn submit_batch(
         return Err(AppError::Conflict(format!("batch is {status}")));
     }
 
-    let rows = sqlx::query_as::<_, (String, Decimal, Option<String>, Option<String>, Option<String>, Option<String>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            Decimal,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
         "SELECT kind::text, amount, counterparty_institution, counterparty_transit, \
          counterparty_account, payee_name FROM aft_entries WHERE batch_id=$1 ORDER BY created_at",
     )
@@ -573,8 +615,14 @@ async fn list_entries(
     Ok(Json(
         rows.into_iter()
             .map(|r| EntryResponse {
-                entry_id: r.0, batch_id: r.1, kind: r.2, direction: r.3,
-                amount: r.4, status: r.5, payee_name: r.6, return_reason: r.7,
+                entry_id: r.0,
+                batch_id: r.1,
+                kind: r.2,
+                direction: r.3,
+                amount: r.4,
+                status: r.5,
+                payee_name: r.6,
+                return_reason: r.7,
             })
             .collect(),
     ))
@@ -611,7 +659,8 @@ async fn network_settle(
     for (entry_id, kind, amount, originator, counterparty_acct, institution) in entries {
         if kind == "credit" {
             // Direct deposit to an external recipient: debit the originator, funds → settlement.
-            let orig = originator.ok_or_else(|| AppError::Internal("credit missing originator".into()))?;
+            let orig =
+                originator.ok_or_else(|| AppError::Internal("credit missing originator".into()))?;
             let acct = fetch_account_for_update(&mut tx, orig)
                 .await?
                 .ok_or_else(|| AppError::Internal("originator account gone".into()))?;
@@ -622,10 +671,17 @@ async fn network_settle(
                 continue;
             }
             zero_available(&mut tx, orig).await?;
-            let hold = rail.hold(&state, &mut tx, orig, amount, "AFT credit settlement").await?;
-            rail.release(&state, &mut tx, &hold,
+            let hold = rail
+                .hold(&state, &mut tx, orig, amount, "AFT credit settlement")
+                .await?;
+            rail.release(
+                &state,
+                &mut tx,
+                &hold,
                 Destination::External(institution.unwrap_or_else(|| "000".into())),
-                "AFT credit settlement").await?;
+                "AFT credit settlement",
+            )
+            .await?;
             recompute_available(&mut tx, orig).await?;
             sqlx::query("UPDATE aft_entries SET status='settled', settle_transaction_id=$2 WHERE entry_id=$1")
                 .bind(entry_id).bind(hold.transaction_id).execute(&mut *tx).await?;
@@ -633,8 +689,10 @@ async fn network_settle(
             settled += 1;
         } else {
             // Intra-bank PAD: payer → biller.
-            let payer = counterparty_acct.ok_or_else(|| AppError::Internal("debit missing payer".into()))?;
-            let biller = originator.ok_or_else(|| AppError::Internal("debit missing biller".into()))?;
+            let payer = counterparty_acct
+                .ok_or_else(|| AppError::Internal("debit missing payer".into()))?;
+            let biller =
+                originator.ok_or_else(|| AppError::Internal("debit missing biller".into()))?;
             let acct = fetch_account_for_update(&mut tx, payer)
                 .await?
                 .ok_or_else(|| AppError::Internal("payer account gone".into()))?;
@@ -645,8 +703,17 @@ async fn network_settle(
                 continue;
             }
             zero_available(&mut tx, payer).await?;
-            let hold = rail.hold(&state, &mut tx, payer, amount, "AFT PAD settlement").await?;
-            rail.release(&state, &mut tx, &hold, Destination::Internal(biller), "AFT PAD settlement").await?;
+            let hold = rail
+                .hold(&state, &mut tx, payer, amount, "AFT PAD settlement")
+                .await?;
+            rail.release(
+                &state,
+                &mut tx,
+                &hold,
+                Destination::Internal(biller),
+                "AFT PAD settlement",
+            )
+            .await?;
             recompute_available(&mut tx, payer).await?;
             recompute_available(&mut tx, biller).await?;
             sqlx::query("UPDATE aft_entries SET status='settled', settle_transaction_id=$2 WHERE entry_id=$1")
@@ -658,12 +725,23 @@ async fn network_settle(
     // Settlement sweep: realize the external direct-deposit cash to Bank (aggregate
     // GL). Per-entry posts are Payable/Payable reclasses; cash hits Bank here.
     if settled_credit_total > Decimal::ZERO {
-        post_gl_entry(&state, &reference_number("AFTS"), "AFT settlement sweep",
-            GlAccount::Payable, GlAccount::Bank, settled_credit_total).await?;
+        post_gl_entry(
+            &state,
+            &reference_number("AFTS"),
+            "AFT settlement sweep",
+            GlAccount::Payable,
+            GlAccount::Bank,
+            settled_credit_total,
+        )
+        .await?;
     }
 
-    sqlx::query("UPDATE aft_batches SET status='settled', settled_at=CURRENT_TIMESTAMP WHERE batch_id=$1")
-        .bind(batch_id).execute(&mut *tx).await?;
+    sqlx::query(
+        "UPDATE aft_batches SET status='settled', settled_at=CURRENT_TIMESTAMP WHERE batch_id=$1",
+    )
+    .bind(batch_id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     tracing::info!(%batch_id, settled, rejected, swept = %settled_credit_total, "🏦 AFT batch settled");
@@ -701,9 +779,22 @@ async fn network_inbound_batch(
             continue;
         };
         if d.txn_code == 'C' {
-            let posting = rail.accept_inbound(&state, &mut tx, acct, d.amount, "AFT inbound credit").await?;
+            let posting = rail
+                .accept_inbound(&state, &mut tx, acct, d.amount, "AFT inbound credit")
+                .await?;
             recompute_available(&mut tx, acct).await?;
-            insert_inbound_entry(&mut tx, batch_id, "credit", acct, &d.payee_name, d.amount, "settled", None, Some(posting.transaction_id)).await?;
+            insert_inbound_entry(
+                &mut tx,
+                batch_id,
+                "credit",
+                acct,
+                &d.payee_name,
+                d.amount,
+                "settled",
+                None,
+                Some(posting.transaction_id),
+            )
+            .await?;
             credited += 1;
         } else {
             // Inbound external PAD debit: applied on an NSF check alone, with NO
@@ -716,15 +807,46 @@ async fn network_inbound_batch(
                 .await?
                 .ok_or_else(|| AppError::Internal("target account gone".into()))?;
             if d.amount > a.available_balance {
-                insert_inbound_entry(&mut tx, batch_id, "debit", acct, &d.payee_name, d.amount, "rejected", Some("NSF"), None).await?;
+                insert_inbound_entry(
+                    &mut tx,
+                    batch_id,
+                    "debit",
+                    acct,
+                    &d.payee_name,
+                    d.amount,
+                    "rejected",
+                    Some("NSF"),
+                    None,
+                )
+                .await?;
                 rejected += 1;
                 continue;
             }
             zero_available(&mut tx, acct).await?;
-            let hold = rail.hold(&state, &mut tx, acct, d.amount, "AFT inbound debit").await?;
-            rail.release(&state, &mut tx, &hold, Destination::External("000".into()), "AFT inbound debit").await?;
+            let hold = rail
+                .hold(&state, &mut tx, acct, d.amount, "AFT inbound debit")
+                .await?;
+            rail.release(
+                &state,
+                &mut tx,
+                &hold,
+                Destination::External("000".into()),
+                "AFT inbound debit",
+            )
+            .await?;
             recompute_available(&mut tx, acct).await?;
-            insert_inbound_entry(&mut tx, batch_id, "debit", acct, &d.payee_name, d.amount, "settled", None, Some(hold.transaction_id)).await?;
+            insert_inbound_entry(
+                &mut tx,
+                batch_id,
+                "debit",
+                acct,
+                &d.payee_name,
+                d.amount,
+                "settled",
+                None,
+                Some(hold.transaction_id),
+            )
+            .await?;
             debited += 1;
         }
     }
@@ -766,17 +888,32 @@ async fn network_returns(
         };
         let posting = if kind == "credit" {
             // Funds return to the originator (Dr SETTLEMENT / Cr originator).
-            let orig = originator.ok_or_else(|| AppError::Internal("return: no originator".into()))?;
-            let p = rail.accept_inbound(&state, &mut tx, orig, d.amount, "AFT credit return").await?;
+            let orig =
+                originator.ok_or_else(|| AppError::Internal("return: no originator".into()))?;
+            let p = rail
+                .accept_inbound(&state, &mut tx, orig, d.amount, "AFT credit return")
+                .await?;
             recompute_available(&mut tx, orig).await?;
             p
         } else {
             // Reverse an intra-bank PAD: biller → payer.
-            let biller = originator.ok_or_else(|| AppError::Internal("return: no biller".into()))?;
-            let payer = counterparty_acct.ok_or_else(|| AppError::Internal("return: no payer".into()))?;
+            let biller =
+                originator.ok_or_else(|| AppError::Internal("return: no biller".into()))?;
+            let payer =
+                counterparty_acct.ok_or_else(|| AppError::Internal("return: no payer".into()))?;
             zero_available(&mut tx, biller).await?;
-            let hold = rail.hold(&state, &mut tx, biller, d.amount, "AFT debit return").await?;
-            let p = rail.release(&state, &mut tx, &hold, Destination::Internal(payer), "AFT debit return").await?;
+            let hold = rail
+                .hold(&state, &mut tx, biller, d.amount, "AFT debit return")
+                .await?;
+            let p = rail
+                .release(
+                    &state,
+                    &mut tx,
+                    &hold,
+                    Destination::Internal(payer),
+                    "AFT debit return",
+                )
+                .await?;
             recompute_available(&mut tx, biller).await?;
             recompute_available(&mut tx, payer).await?;
             p

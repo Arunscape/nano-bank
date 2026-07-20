@@ -66,12 +66,33 @@ impl LynxRail {
         description: &str,
     ) -> Result<RailPosting, AppError> {
         let reference = reference_number("LYNXC");
-        let txn_id = common::new_txn(tx, self.ctx(), "clawback", &reference, amount, description).await?;
-        post_two_legged(tx, txn_id, from, "debit", self.accounts.settlement_id, "credit", amount).await?;
-        let gl = post_gl_entry(state, &reference, description, GlAccount::Payable, GlAccount::Bank, amount).await?;
+        let txn_id =
+            common::new_txn(tx, self.ctx(), "clawback", &reference, amount, description).await?;
+        post_two_legged(
+            tx,
+            txn_id,
+            from,
+            "debit",
+            self.accounts.settlement_id,
+            "credit",
+            amount,
+        )
+        .await?;
+        let gl = post_gl_entry(
+            state,
+            &reference,
+            description,
+            GlAccount::Payable,
+            GlAccount::Bank,
+            amount,
+        )
+        .await?;
         let gl_ref = format!("{}:{}", gl.backend, gl.id);
         common::tag_gl(tx, txn_id, &gl_ref).await?;
-        Ok(RailPosting { transaction_id: txn_id, gl_entry: Some(gl_ref) })
+        Ok(RailPosting {
+            transaction_id: txn_id,
+            gl_entry: Some(gl_ref),
+        })
     }
 }
 
@@ -87,7 +108,10 @@ pub async fn ensure_lynx_accounts(pool: &DatabasePool) -> Result<LynxAccounts, s
         "Lynx",
     )
     .await?;
-    Ok(LynxAccounts { clearing_id, settlement_id })
+    Ok(LynxAccounts {
+        clearing_id,
+        settlement_id,
+    })
 }
 
 // Lynx keeps its own Rail verbs below because its GL differs from Interac/AFT
@@ -110,7 +134,8 @@ impl Rail for LynxRail {
         description: &str,
     ) -> Result<Hold, AppError> {
         let reference = reference_number("LYNXH");
-        let txn_id = common::new_txn(tx, self.ctx(), "hold", &reference, amount, description).await?;
+        let txn_id =
+            common::new_txn(tx, self.ctx(), "hold", &reference, amount, description).await?;
         post_two_legged(
             tx,
             txn_id,
@@ -151,7 +176,15 @@ impl Rail for LynxRail {
         description: &str,
     ) -> Result<RailPosting, AppError> {
         let reference = reference_number("LYNXS");
-        let txn_id = common::new_txn(tx, self.ctx(), "settle", &reference, hold.amount, description).await?;
+        let txn_id = common::new_txn(
+            tx,
+            self.ctx(),
+            "settle",
+            &reference,
+            hold.amount,
+            description,
+        )
+        .await?;
         let (credit_account, gl_credit) = match dest {
             Destination::Internal(acct) => (acct, GlAccount::Payable),
             Destination::External(_) => (self.accounts.settlement_id, GlAccount::Bank),
@@ -193,7 +226,15 @@ impl Rail for LynxRail {
         description: &str,
     ) -> Result<RailPosting, AppError> {
         let reference = reference_number("LYNXX");
-        let txn_id = common::new_txn(tx, self.ctx(), "refund", &reference, hold.amount, description).await?;
+        let txn_id = common::new_txn(
+            tx,
+            self.ctx(),
+            "refund",
+            &reference,
+            hold.amount,
+            description,
+        )
+        .await?;
         post_two_legged(
             tx,
             txn_id,
@@ -232,7 +273,8 @@ impl Rail for LynxRail {
         description: &str,
     ) -> Result<RailPosting, AppError> {
         let reference = reference_number("LYNXI");
-        let txn_id = common::new_txn(tx, self.ctx(), "inbound", &reference, amount, description).await?;
+        let txn_id =
+            common::new_txn(tx, self.ctx(), "inbound", &reference, amount, description).await?;
         post_two_legged(
             tx,
             txn_id,

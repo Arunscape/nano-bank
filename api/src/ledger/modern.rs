@@ -53,10 +53,7 @@ impl Ledger for ModernLedger {
             .map_err(transport)?;
         let resp = check(resp).await?;
         let value: serde_json::Value = resp.json().await.map_err(transport)?;
-        let id = value
-            .get("id")
-            .map(|v| v.to_string())
-            .unwrap_or_default();
+        let id = value.get("id").map(|v| v.to_string()).unwrap_or_default();
         Ok(PostedEntry {
             id,
             backend: "modern".into(),

@@ -62,9 +62,7 @@ pub fn normalize_handle(handle_type: HandleType, raw: &str) -> String {
 
 /// Create Interac's system customer + two GL accounts if absent; return ids.
 /// Idempotent — mirrors `handlers::cards::ensure_system_accounts`.
-pub async fn ensure_interac_accounts(
-    pool: &DatabasePool,
-) -> Result<InteracAccounts, sqlx::Error> {
+pub async fn ensure_interac_accounts(pool: &DatabasePool) -> Result<InteracAccounts, sqlx::Error> {
     let (clearing_id, settlement_id) = common::ensure_rail_accounts(
         pool,
         INTERAC_CUSTOMER_EMAIL,
@@ -74,7 +72,10 @@ pub async fn ensure_interac_accounts(
         "Interac",
     )
     .await?;
-    Ok(InteracAccounts { clearing_id, settlement_id })
+    Ok(InteracAccounts {
+        clearing_id,
+        settlement_id,
+    })
 }
 
 impl InteracRail {
@@ -99,19 +100,46 @@ impl Rail for InteracRail {
         RailId::Interac
     }
 
-    async fn hold(&self, state: &AppState, tx: &mut PgTx<'_>, from: Uuid, amount: Decimal, description: &str) -> Result<Hold, AppError> {
+    async fn hold(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        from: Uuid,
+        amount: Decimal,
+        description: &str,
+    ) -> Result<Hold, AppError> {
         common::hold(self.ctx(), state, tx, from, amount, description).await
     }
 
-    async fn release(&self, state: &AppState, tx: &mut PgTx<'_>, hold: &Hold, dest: Destination, description: &str) -> Result<RailPosting, AppError> {
+    async fn release(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        hold: &Hold,
+        dest: Destination,
+        description: &str,
+    ) -> Result<RailPosting, AppError> {
         common::release(self.ctx(), state, tx, hold, dest, description).await
     }
 
-    async fn refund(&self, state: &AppState, tx: &mut PgTx<'_>, hold: &Hold, description: &str) -> Result<RailPosting, AppError> {
+    async fn refund(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        hold: &Hold,
+        description: &str,
+    ) -> Result<RailPosting, AppError> {
         common::refund(self.ctx(), state, tx, hold, description).await
     }
 
-    async fn accept_inbound(&self, state: &AppState, tx: &mut PgTx<'_>, to: Uuid, amount: Decimal, description: &str) -> Result<RailPosting, AppError> {
+    async fn accept_inbound(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        to: Uuid,
+        amount: Decimal,
+        description: &str,
+    ) -> Result<RailPosting, AppError> {
         common::accept_inbound(self.ctx(), state, tx, to, amount, description).await
     }
 }
@@ -122,11 +150,17 @@ mod tests {
 
     #[test]
     fn email_handles_are_lowercased_and_trimmed() {
-        assert_eq!(normalize_handle(HandleType::Email, "  Alice@Example.COM "), "alice@example.com");
+        assert_eq!(
+            normalize_handle(HandleType::Email, "  Alice@Example.COM "),
+            "alice@example.com"
+        );
     }
 
     #[test]
     fn phone_handles_keep_only_digits_and_plus() {
-        assert_eq!(normalize_handle(HandleType::Phone, "+1 (416) 555-0199"), "+14165550199");
+        assert_eq!(
+            normalize_handle(HandleType::Phone, "+1 (416) 555-0199"),
+            "+14165550199"
+        );
     }
 }

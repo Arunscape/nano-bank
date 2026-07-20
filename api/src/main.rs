@@ -185,12 +185,10 @@ async fn create_router(pool: config::database::DatabasePool, settings: &Settings
         .nest("/api/v1/approvals", handlers::approvals::approval_routes())
         // Credit-card payment rails (issuer endpoints)
         .nest("/api/v1/cards", handlers::cards::card_routes())
-
         // Interac e-Transfer rails
         .nest("/api/v1/interac", handlers::interac::interac_routes())
         .nest("/api/v1/aft", handlers::aft::aft_routes())
         .nest("/api/v1/lynx", handlers::lynx::lynx_routes())
-
         // Transaction routes
         .nest(
             "/api/v1/transactions",

@@ -124,7 +124,12 @@ pub async fn balance(c: &reqwest::Client, token: &str, account_id: Uuid) -> f64 
     as_num(&v["balance"])
 }
 
-pub async fn post_json(c: &reqwest::Client, token: &str, path: &str, body: Value) -> reqwest::Response {
+pub async fn post_json(
+    c: &reqwest::Client,
+    token: &str,
+    path: &str,
+    body: Value,
+) -> reqwest::Response {
     c.post(format!("{}{}", base_url(), path))
         .bearer_auth(token)
         .json(&body)

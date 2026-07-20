@@ -53,7 +53,10 @@ pub async fn ensure_aft_accounts(pool: &DatabasePool) -> Result<AftAccounts, sql
         "AFT",
     )
     .await?;
-    Ok(AftAccounts { clearing_id, settlement_id })
+    Ok(AftAccounts {
+        clearing_id,
+        settlement_id,
+    })
 }
 
 impl AftRail {
@@ -73,19 +76,46 @@ impl Rail for AftRail {
         RailId::Aft
     }
 
-    async fn hold(&self, state: &AppState, tx: &mut PgTx<'_>, from: Uuid, amount: Decimal, description: &str) -> Result<Hold, AppError> {
+    async fn hold(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        from: Uuid,
+        amount: Decimal,
+        description: &str,
+    ) -> Result<Hold, AppError> {
         common::hold(self.ctx(), state, tx, from, amount, description).await
     }
 
-    async fn release(&self, state: &AppState, tx: &mut PgTx<'_>, hold: &Hold, dest: Destination, description: &str) -> Result<RailPosting, AppError> {
+    async fn release(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        hold: &Hold,
+        dest: Destination,
+        description: &str,
+    ) -> Result<RailPosting, AppError> {
         common::release(self.ctx(), state, tx, hold, dest, description).await
     }
 
-    async fn refund(&self, state: &AppState, tx: &mut PgTx<'_>, hold: &Hold, description: &str) -> Result<RailPosting, AppError> {
+    async fn refund(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        hold: &Hold,
+        description: &str,
+    ) -> Result<RailPosting, AppError> {
         common::refund(self.ctx(), state, tx, hold, description).await
     }
 
-    async fn accept_inbound(&self, state: &AppState, tx: &mut PgTx<'_>, to: Uuid, amount: Decimal, description: &str) -> Result<RailPosting, AppError> {
+    async fn accept_inbound(
+        &self,
+        state: &AppState,
+        tx: &mut PgTx<'_>,
+        to: Uuid,
+        amount: Decimal,
+        description: &str,
+    ) -> Result<RailPosting, AppError> {
         common::accept_inbound(self.ctx(), state, tx, to, amount, description).await
     }
 }

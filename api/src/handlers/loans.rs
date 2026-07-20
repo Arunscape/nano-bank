@@ -10,8 +10,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::errors::AppError;
-use crate::handlers::AppState;
 use crate::handlers::cards::{post_gl_entry, post_two_legged, Tx};
+use crate::handlers::AppState;
 use crate::ledger::Account as GlAccount;
 use crate::middleware::auth::AuthenticatedCustomer;
 use crate::models::loan::{ApplyLoanRequest, Loan, LoanResponse, LoanSummary, RepayLoanRequest};
@@ -35,7 +35,7 @@ async fn get_loans(
     let loans = sqlx::query_as::<_, Loan>(
         "SELECT loan_id, customer_id, account_id, principal_amount, interest_rate, \
          amortization_months, monthly_payment, status, next_payment_date, created_at, updated_at \
-         FROM loans WHERE customer_id = $1 ORDER BY created_at DESC"
+         FROM loans WHERE customer_id = $1 ORDER BY created_at DESC",
     )
     .bind(auth.customer_id)
     .fetch_all(&state.pool)
@@ -56,32 +56,44 @@ async fn apply_for_loan(
     let months = payload.amortization_months;
 
     if principal <= Decimal::ZERO {
-        return Err(AppError::BadRequest("Principal amount must be positive".to_string()));
+        return Err(AppError::BadRequest(
+            "Principal amount must be positive".to_string(),
+        ));
     }
     if interest_rate < Decimal::ZERO || interest_rate > Decimal::ONE {
-        return Err(AppError::BadRequest("Interest rate must be between 0 and 1".to_string()));
+        return Err(AppError::BadRequest(
+            "Interest rate must be between 0 and 1".to_string(),
+        ));
     }
     if months <= 0 {
-        return Err(AppError::BadRequest("Amortization months must be positive".to_string()));
+        return Err(AppError::BadRequest(
+            "Amortization months must be positive".to_string(),
+        ));
     }
 
     // Check customer KYC verification status
-    let kyc_status: String = sqlx::query_scalar("SELECT kyc_status::text FROM customers WHERE customer_id = $1")
-        .bind(auth.customer_id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => AppError::NotFound("Customer not found".to_string()),
-            e => AppError::Database(e),
-        })?;
+    let kyc_status: String =
+        sqlx::query_scalar("SELECT kyc_status::text FROM customers WHERE customer_id = $1")
+            .bind(auth.customer_id)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|e| match e {
+                sqlx::Error::RowNotFound => AppError::NotFound("Customer not found".to_string()),
+                e => AppError::Database(e),
+            })?;
 
     if kyc_status != "verified" {
-        return Err(AppError::BadRequest("KYC verification is required to apply for a loan".to_string()));
+        return Err(AppError::BadRequest(
+            "KYC verification is required to apply for a loan".to_string(),
+        ));
     }
 
     // Calculate amortized monthly payment
-    let monthly_payment = crate::utils::math::calculate_monthly_payment(principal, interest_rate, months as u32)
-        .ok_or_else(|| AppError::BadRequest("Invalid loan parameters for math calculation".to_string()))?;
+    let monthly_payment =
+        crate::utils::math::calculate_monthly_payment(principal, interest_rate, months as u32)
+            .ok_or_else(|| {
+                AppError::BadRequest("Invalid loan parameters for math calculation".to_string())
+            })?;
 
     let mut tx = state.pool.begin().await?;
 
@@ -139,7 +151,7 @@ async fn get_loan(
     let loan = sqlx::query_as::<_, Loan>(
         "SELECT loan_id, customer_id, account_id, principal_amount, interest_rate, \
          amortization_months, monthly_payment, status, next_payment_date, created_at, updated_at \
-         FROM loans WHERE loan_id = $1"
+         FROM loans WHERE loan_id = $1",
     )
     .bind(id)
     .fetch_one(&state.pool)
@@ -164,7 +176,7 @@ async fn disburse_loan(
     let loan = sqlx::query_as::<_, Loan>(
         "SELECT loan_id, customer_id, account_id, principal_amount, interest_rate, \
          amortization_months, monthly_payment, status, next_payment_date, created_at, updated_at \
-         FROM loans WHERE loan_id = $1"
+         FROM loans WHERE loan_id = $1",
     )
     .bind(id)
     .fetch_one(&state.pool)
@@ -178,14 +190,16 @@ async fn disburse_loan(
         return Err(AppError::NotFound("Loan not found".to_string()));
     }
     if loan.status != "pending_disbursement" {
-        return Err(AppError::BadRequest("Loan is not pending disbursement".to_string()));
+        return Err(AppError::BadRequest(
+            "Loan is not pending disbursement".to_string(),
+        ));
     }
 
     // Locate the customer's first active chequing account
     let dest_account_id: Uuid = sqlx::query_scalar(
         "SELECT account_id FROM accounts \
          WHERE customer_id = $1 AND status = 'active' AND account_type = 'chequing' \
-         ORDER BY created_at LIMIT 1"
+         ORDER BY created_at LIMIT 1",
     )
     .bind(auth.customer_id)
     .fetch_optional(&state.pool)
@@ -196,14 +210,16 @@ async fn disburse_loan(
         sqlx::query_scalar(
             "SELECT account_id FROM accounts \
              WHERE customer_id = $1 AND status = 'active' AND account_type = 'savings' \
-             ORDER BY created_at LIMIT 1"
+             ORDER BY created_at LIMIT 1",
         )
         .bind(auth.customer_id)
         .fetch_optional(&state.pool)
         .await
-        .map_err(AppError::Database)?
+        .map_err(AppError::Database)?,
     )
-    .ok_or_else(|| AppError::BadRequest("No active deposit account found to receive disbursement".to_string()))?;
+    .ok_or_else(|| {
+        AppError::BadRequest("No active deposit account found to receive disbursement".to_string())
+    })?;
 
     let mut tx = state.pool.begin().await?;
 
@@ -248,10 +264,12 @@ async fn disburse_loan(
     recompute_available(&mut tx, dest_account_id).await?;
 
     // Activate the loan and its account
-    sqlx::query("UPDATE loans SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE loan_id = $1")
-        .bind(loan.loan_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE loans SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE loan_id = $1",
+    )
+    .bind(loan.loan_id)
+    .execute(&mut *tx)
+    .await?;
 
     sqlx::query("UPDATE accounts SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE account_id = $1")
         .bind(loan.account_id)
@@ -272,7 +290,7 @@ async fn disburse_loan(
     // Tag GL entry reference on transaction metadata
     sqlx::query(
         "UPDATE transactions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), \
-         '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1"
+         '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1",
     )
     .bind(txn_id)
     .bind(&format!("{}:{}", posted.backend, posted.id))
@@ -292,7 +310,7 @@ async fn disburse_loan(
     let updated_loan = sqlx::query_as::<_, Loan>(
         "SELECT loan_id, customer_id, account_id, principal_amount, interest_rate, \
          amortization_months, monthly_payment, status, next_payment_date, created_at, updated_at \
-         FROM loans WHERE loan_id = $1"
+         FROM loans WHERE loan_id = $1",
     )
     .bind(loan.loan_id)
     .fetch_one(&state.pool)
@@ -310,13 +328,15 @@ async fn repay_loan(
 ) -> Result<Json<LoanResponse>, AppError> {
     let amount = payload.amount.round_dp(2);
     if amount <= Decimal::ZERO {
-        return Err(AppError::BadRequest("Repayment amount must be positive".to_string()));
+        return Err(AppError::BadRequest(
+            "Repayment amount must be positive".to_string(),
+        ));
     }
 
     let loan = sqlx::query_as::<_, Loan>(
         "SELECT loan_id, customer_id, account_id, principal_amount, interest_rate, \
          amortization_months, monthly_payment, status, next_payment_date, created_at, updated_at \
-         FROM loans WHERE loan_id = $1"
+         FROM loans WHERE loan_id = $1",
     )
     .bind(id)
     .fetch_one(&state.pool)
@@ -330,7 +350,9 @@ async fn repay_loan(
         return Err(AppError::NotFound("Loan not found".to_string()));
     }
     if loan.status != "active" {
-        return Err(AppError::BadRequest("Repayment is only permitted on active loans".to_string()));
+        return Err(AppError::BadRequest(
+            "Repayment is only permitted on active loans".to_string(),
+        ));
     }
 
     // Fetch and validate the funding account
@@ -338,7 +360,7 @@ async fn repay_loan(
         "SELECT account_id, customer_id, account_number, account_type, currency, \
          balance, available_balance, status, interest_rate, overdraft_limit, \
          minimum_balance, created_at, updated_at, activated_at, closed_at \
-         FROM accounts WHERE account_id = $1"
+         FROM accounts WHERE account_id = $1",
     )
     .bind(payload.funding_account_id)
     .fetch_one(&state.pool)
@@ -352,22 +374,27 @@ async fn repay_loan(
         return Err(AppError::NotFound("Funding account not found".to_string()));
     }
     if funding.status != crate::models::account::AccountStatus::Active {
-        return Err(AppError::BadRequest("Funding account is not active".to_string()));
+        return Err(AppError::BadRequest(
+            "Funding account is not active".to_string(),
+        ));
     }
     if funding.available_balance < amount {
         return Err(AppError::InsufficientFunds);
     }
 
     // Determine remaining debt on the loan account
-    let loan_account_balance: Decimal = sqlx::query_scalar("SELECT balance FROM accounts WHERE account_id = $1")
-        .bind(loan.account_id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(AppError::Database)?;
+    let loan_account_balance: Decimal =
+        sqlx::query_scalar("SELECT balance FROM accounts WHERE account_id = $1")
+            .bind(loan.account_id)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
 
     let remaining_debt = -loan_account_balance;
     if remaining_debt <= Decimal::ZERO {
-        return Err(AppError::BadRequest("Loan is already fully repaid".to_string()));
+        return Err(AppError::BadRequest(
+            "Loan is already fully repaid".to_string(),
+        ));
     }
 
     let amount_to_pay = amount.min(remaining_debt);
@@ -418,17 +445,20 @@ async fn repay_loan(
     recompute_available(&mut tx, loan.account_id).await?;
 
     // Fetch the new balance of the loan account to see if it is closed
-    let new_loan_balance: Decimal = sqlx::query_scalar("SELECT balance FROM accounts WHERE account_id = $1")
-        .bind(loan.account_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let new_loan_balance: Decimal =
+        sqlx::query_scalar("SELECT balance FROM accounts WHERE account_id = $1")
+            .bind(loan.account_id)
+            .fetch_one(&mut *tx)
+            .await?;
 
     if new_loan_balance >= Decimal::ZERO {
         // Loan is fully paid off!
-        sqlx::query("UPDATE loans SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE loan_id = $1")
-            .bind(loan.loan_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE loans SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE loan_id = $1",
+        )
+        .bind(loan.loan_id)
+        .execute(&mut *tx)
+        .await?;
 
         sqlx::query("UPDATE accounts SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE account_id = $1")
             .bind(loan.account_id)
@@ -458,7 +488,7 @@ async fn repay_loan(
     // Tag GL entry reference on transaction metadata
     sqlx::query(
         "UPDATE transactions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), \
-         '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1"
+         '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1",
     )
     .bind(txn_id)
     .bind(&format!("{}:{}", posted.backend, posted.id))
@@ -471,7 +501,7 @@ async fn repay_loan(
     let updated_loan = sqlx::query_as::<_, Loan>(
         "SELECT loan_id, customer_id, account_id, principal_amount, interest_rate, \
          amortization_months, monthly_payment, status, next_payment_date, created_at, updated_at \
-         FROM loans WHERE loan_id = $1"
+         FROM loans WHERE loan_id = $1",
     )
     .bind(loan.loan_id)
     .fetch_one(&state.pool)
@@ -481,26 +511,27 @@ async fn repay_loan(
     Ok(Json(updated_loan.into()))
 }
 
-async fn admin_accrue_interest(
-    State(state): State<AppState>,
-) -> Result<StatusCode, AppError> {
+async fn admin_accrue_interest(State(state): State<AppState>) -> Result<StatusCode, AppError> {
     let active_loans = sqlx::query_as::<_, Loan>(
         "SELECT loan_id, customer_id, account_id, principal_amount, interest_rate, \
          amortization_months, monthly_payment, status, next_payment_date, created_at, updated_at \
-         FROM loans WHERE status = 'active'"
+         FROM loans WHERE status = 'active'",
     )
     .fetch_all(&state.pool)
     .await
     .map_err(AppError::Database)?;
 
-    let cash_id = ensure_external_cash_account(&state.pool).await.map_err(AppError::Database)?;
+    let cash_id = ensure_external_cash_account(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
 
     for loan in active_loans {
-        let balance: Decimal = sqlx::query_scalar("SELECT balance FROM accounts WHERE account_id = $1")
-            .bind(loan.account_id)
-            .fetch_one(&state.pool)
-            .await
-            .map_err(AppError::Database)?;
+        let balance: Decimal =
+            sqlx::query_scalar("SELECT balance FROM accounts WHERE account_id = $1")
+                .bind(loan.account_id)
+                .fetch_one(&state.pool)
+                .await
+                .map_err(AppError::Database)?;
 
         let remaining_debt = -balance;
         if remaining_debt <= Decimal::ZERO {
@@ -570,7 +601,7 @@ async fn admin_accrue_interest(
         // Tag GL entry reference on transaction metadata
         sqlx::query(
             "UPDATE transactions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), \
-             '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1"
+             '{gl_entry}', to_jsonb($2::text)) WHERE transaction_id = $1",
         )
         .bind(txn_id)
         .bind(&format!("{}:{}", posted.backend, posted.id))
@@ -668,10 +699,7 @@ async fn insert_transaction(
     .await
 }
 
-async fn set_available_zero(
-    tx: &mut Tx<'_>,
-    account_id: Uuid,
-) -> Result<(), sqlx::Error> {
+async fn set_available_zero(tx: &mut Tx<'_>, account_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE accounts SET available_balance = 0 WHERE account_id = $1")
         .bind(account_id)
         .execute(&mut **tx)
@@ -679,10 +707,7 @@ async fn set_available_zero(
     Ok(())
 }
 
-async fn recompute_available(
-    tx: &mut Tx<'_>,
-    account_id: Uuid,
-) -> Result<Decimal, sqlx::Error> {
+async fn recompute_available(tx: &mut Tx<'_>, account_id: Uuid) -> Result<Decimal, sqlx::Error> {
     sqlx::query_scalar(
         r#"
         UPDATE accounts

@@ -62,7 +62,10 @@ fn slice(line: &str, a: usize, b: usize) -> Result<&str, CpaError> {
 }
 
 fn cents(a: Decimal) -> String {
-    format!("{:010}", (a * Decimal::from(100)).round().to_i64().unwrap_or(0))
+    format!(
+        "{:010}",
+        (a * Decimal::from(100)).round().to_i64().unwrap_or(0)
+    )
 }
 
 fn parse_cents(s: &str) -> Decimal {
@@ -80,15 +83,15 @@ pub fn encode(h: &Header, details: &[Detail], t: &Trailer) -> String {
     for d in details {
         out.push_str(&format!(
             "{}{}{}{}{}{}{}{}{}\n",
-            d.txn_code,                                          // 1  (C|D)
-            cents(d.amount),                                     // 10
-            field(&d.institution, 3),                            // 3
-            field(&d.transit, 5),                                // 5
-            field(&d.account, 12),                               // 12
-            field(&d.payee_name, 30),                            // 30
-            field(&d.originator_short, 4),                       // 4
-            field(&d.due_date, 7),                               // 7
-            field(d.return_reason.as_deref().unwrap_or(""), 4),  // 4
+            d.txn_code,                                         // 1  (C|D)
+            cents(d.amount),                                    // 10
+            field(&d.institution, 3),                           // 3
+            field(&d.transit, 5),                               // 5
+            field(&d.account, 12),                              // 12
+            field(&d.payee_name, 30),                           // 30
+            field(&d.originator_short, 4),                      // 4
+            field(&d.due_date, 7),                              // 7
+            field(d.return_reason.as_deref().unwrap_or(""), 4), // 4
         ));
     }
     out.push_str(&format!(
@@ -215,8 +218,16 @@ mod tests {
     #[test]
     fn trailer_totals_match_details() {
         let (_h, d, t) = sample();
-        let credits: Decimal = d.iter().filter(|x| x.txn_code == 'C').map(|x| x.amount).sum();
-        let debits: Decimal = d.iter().filter(|x| x.txn_code == 'D').map(|x| x.amount).sum();
+        let credits: Decimal = d
+            .iter()
+            .filter(|x| x.txn_code == 'C')
+            .map(|x| x.amount)
+            .sum();
+        let debits: Decimal = d
+            .iter()
+            .filter(|x| x.txn_code == 'D')
+            .map(|x| x.amount)
+            .sum();
         assert_eq!(credits, t.total_credits);
         assert_eq!(debits, t.total_debits);
     }
@@ -241,7 +252,9 @@ mod tests {
             .lines()
             .filter(|l| l.starts_with('C') || l.starts_with('D'))
             .collect();
-        assert!(detail_lines.iter().all(|l| l.len() == detail_lines[0].len()));
+        assert!(detail_lines
+            .iter()
+            .all(|l| l.len() == detail_lines[0].len()));
         let (_h, d2, _t) = decode(&encoded).expect("accented file must decode");
         assert_eq!(d2[0].institution, "003"); // field after payee still aligned
         assert_eq!(d2[0].payee_name, "Andr? Ren?e");

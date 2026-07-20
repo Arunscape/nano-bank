@@ -162,8 +162,16 @@ pub(crate) async fn post_gl_entry(
             reference: Some(reference.to_string()),
             description: Some(description.to_string()),
             lines: vec![
-                EntryLine { account: debit, direction: Direction::Debit, amount },
-                EntryLine { account: credit, direction: Direction::Credit, amount },
+                EntryLine {
+                    account: debit,
+                    direction: Direction::Debit,
+                    amount,
+                },
+                EntryLine {
+                    account: credit,
+                    direction: Direction::Credit,
+                    amount,
+                },
             ],
         })
         .await

@@ -98,9 +98,22 @@ pub(crate) async fn hold(
     let reference = reference_number(&format!("{}H", ctx.id.ref_root()));
     let txn_id = new_txn(tx, ctx, "hold", &reference, amount, description).await?;
     post_two_legged(tx, txn_id, from, "debit", ctx.clearing_id, "credit", amount).await?;
-    let gl = post_gl_entry(state, &reference, description, GlAccount::Payable, GlAccount::Payable, amount).await?;
+    let gl = post_gl_entry(
+        state,
+        &reference,
+        description,
+        GlAccount::Payable,
+        GlAccount::Payable,
+        amount,
+    )
+    .await?;
     tag_gl(tx, txn_id, &format!("{}:{}", gl.backend, gl.id)).await?;
-    Ok(Hold { from_account: from, amount, reference, transaction_id: txn_id })
+    Ok(Hold {
+        from_account: from,
+        amount,
+        reference,
+        transaction_id: txn_id,
+    })
 }
 
 /// Release a hold to its destination.
@@ -119,11 +132,31 @@ pub(crate) async fn release(
         Destination::Internal(acct) => acct,
         Destination::External(_) => ctx.settlement_id,
     };
-    post_two_legged(tx, txn_id, ctx.clearing_id, "debit", credit_account, "credit", hold.amount).await?;
-    let gl = post_gl_entry(state, &reference, description, GlAccount::Payable, GlAccount::Payable, hold.amount).await?;
+    post_two_legged(
+        tx,
+        txn_id,
+        ctx.clearing_id,
+        "debit",
+        credit_account,
+        "credit",
+        hold.amount,
+    )
+    .await?;
+    let gl = post_gl_entry(
+        state,
+        &reference,
+        description,
+        GlAccount::Payable,
+        GlAccount::Payable,
+        hold.amount,
+    )
+    .await?;
     let gl_entry = format!("{}:{}", gl.backend, gl.id);
     tag_gl(tx, txn_id, &gl_entry).await?;
-    Ok(RailPosting { transaction_id: txn_id, gl_entry: Some(gl_entry) })
+    Ok(RailPosting {
+        transaction_id: txn_id,
+        gl_entry: Some(gl_entry),
+    })
 }
 
 /// Return a hold to its origin (Dr CLEARING / Cr `hold.from_account`).
@@ -136,11 +169,31 @@ pub(crate) async fn refund(
 ) -> Result<RailPosting, AppError> {
     let reference = reference_number(&format!("{}X", ctx.id.ref_root()));
     let txn_id = new_txn(tx, ctx, "refund", &reference, hold.amount, description).await?;
-    post_two_legged(tx, txn_id, ctx.clearing_id, "debit", hold.from_account, "credit", hold.amount).await?;
-    let gl = post_gl_entry(state, &reference, description, GlAccount::Payable, GlAccount::Payable, hold.amount).await?;
+    post_two_legged(
+        tx,
+        txn_id,
+        ctx.clearing_id,
+        "debit",
+        hold.from_account,
+        "credit",
+        hold.amount,
+    )
+    .await?;
+    let gl = post_gl_entry(
+        state,
+        &reference,
+        description,
+        GlAccount::Payable,
+        GlAccount::Payable,
+        hold.amount,
+    )
+    .await?;
     let gl_entry = format!("{}:{}", gl.backend, gl.id);
     tag_gl(tx, txn_id, &gl_entry).await?;
-    Ok(RailPosting { transaction_id: txn_id, gl_entry: Some(gl_entry) })
+    Ok(RailPosting {
+        transaction_id: txn_id,
+        gl_entry: Some(gl_entry),
+    })
 }
 
 /// Credit an incoming payment straight to a customer account (autodeposit fast
@@ -156,10 +209,21 @@ pub(crate) async fn accept_inbound(
     let reference = reference_number(&format!("{}I", ctx.id.ref_root()));
     let txn_id = new_txn(tx, ctx, "inbound", &reference, amount, description).await?;
     post_two_legged(tx, txn_id, ctx.settlement_id, "debit", to, "credit", amount).await?;
-    let gl = post_gl_entry(state, &reference, description, GlAccount::Receivable, GlAccount::Payable, amount).await?;
+    let gl = post_gl_entry(
+        state,
+        &reference,
+        description,
+        GlAccount::Receivable,
+        GlAccount::Payable,
+        amount,
+    )
+    .await?;
     let gl_entry = format!("{}:{}", gl.backend, gl.id);
     tag_gl(tx, txn_id, &gl_entry).await?;
-    Ok(RailPosting { transaction_id: txn_id, gl_entry: Some(gl_entry) })
+    Ok(RailPosting {
+        transaction_id: txn_id,
+        gl_entry: Some(gl_entry),
+    })
 }
 
 /// Create a rail's synthetic system customer (if absent) plus its two GL
@@ -187,10 +251,11 @@ pub(crate) async fn ensure_rail_accounts(
     .execute(pool)
     .await?;
 
-    let customer_id: Uuid = sqlx::query_scalar("SELECT customer_id FROM customers WHERE email = $1")
-        .bind(email)
-        .fetch_one(pool)
-        .await?;
+    let customer_id: Uuid =
+        sqlx::query_scalar("SELECT customer_id FROM customers WHERE email = $1")
+            .bind(email)
+            .fetch_one(pool)
+            .await?;
 
     let clearing_id = ensure_gl_account(pool, customer_id, "chequing").await?;
     let settlement_id = ensure_gl_account(pool, customer_id, "savings").await?;
@@ -241,7 +306,10 @@ pub(crate) async fn zero_available(tx: &mut PgTx<'_>, account_id: Uuid) -> Resul
 
 /// Recompute a customer account's available balance:
 /// `balance + overdraft − open holds`.
-pub(crate) async fn recompute_available(tx: &mut PgTx<'_>, account_id: Uuid) -> Result<(), AppError> {
+pub(crate) async fn recompute_available(
+    tx: &mut PgTx<'_>,
+    account_id: Uuid,
+) -> Result<(), AppError> {
     sqlx::query(
         "UPDATE accounts SET available_balance = balance + overdraft_limit \
          - COALESCE((SELECT sum(amount) FROM account_holds \

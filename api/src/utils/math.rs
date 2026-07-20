@@ -1,5 +1,5 @@
-use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
+use rust_decimal::Decimal;
 
 /// Calculates the monthly payment (PMT) for a loan using the standard amortization formula.
 ///
@@ -71,17 +71,26 @@ mod tests {
     fn test_calculate_monthly_payment_invalid_inputs() {
         let principal = Decimal::from(10000);
         let annual_rate = Decimal::from_str("0.085").unwrap();
-        
+
         // Zero months
         assert_eq!(calculate_monthly_payment(principal, annual_rate, 0), None);
 
         // Negative principal
-        assert_eq!(calculate_monthly_payment(Decimal::from(-100), annual_rate, 12), None);
+        assert_eq!(
+            calculate_monthly_payment(Decimal::from(-100), annual_rate, 12),
+            None
+        );
 
         // Zero principal
-        assert_eq!(calculate_monthly_payment(Decimal::ZERO, annual_rate, 12), None);
+        assert_eq!(
+            calculate_monthly_payment(Decimal::ZERO, annual_rate, 12),
+            None
+        );
 
         // Negative rate
-        assert_eq!(calculate_monthly_payment(principal, Decimal::from_str("-0.05").unwrap(), 12), None);
+        assert_eq!(
+            calculate_monthly_payment(principal, Decimal::from_str("-0.05").unwrap(), 12),
+            None
+        );
     }
 }

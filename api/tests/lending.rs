@@ -86,7 +86,10 @@ async fn test_loan_lifecycle() {
         .await
         .unwrap();
     assert_eq!(list_resp.as_array().unwrap().len(), 1);
-    assert_eq!(Uuid::parse_str(list_resp[0]["loan_id"].as_str().unwrap()).unwrap(), loan_id);
+    assert_eq!(
+        Uuid::parse_str(list_resp[0]["loan_id"].as_str().unwrap()).unwrap(),
+        loan_id
+    );
 
     // 7. Verify GET /loans/{id} detailed lookup
     let detail_resp: Value = c
@@ -98,7 +101,10 @@ async fn test_loan_lifecycle() {
         .json()
         .await
         .unwrap();
-    assert_eq!(detail_resp["status"].as_str().unwrap(), "pending_disbursement");
+    assert_eq!(
+        detail_resp["status"].as_str().unwrap(),
+        "pending_disbursement"
+    );
 
     // 8. Disburse the loan
     let disburse_resp = c
@@ -113,7 +119,11 @@ async fn test_loan_lifecycle() {
 
     // 9. Verify balances: loan account is -10k (debt), chequing is +10k
     let chequing_bal: Value = c
-        .get(format!("{}/api/v1/accounts/{}/balance", base_url(), chequing_id))
+        .get(format!(
+            "{}/api/v1/accounts/{}/balance",
+            base_url(),
+            chequing_id
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -124,7 +134,11 @@ async fn test_loan_lifecycle() {
     assert_eq!(as_num(&chequing_bal["balance"]), 10000.00);
 
     let loan_bal: Value = c
-        .get(format!("{}/api/v1/accounts/{}/balance", base_url(), loan_account_id))
+        .get(format!(
+            "{}/api/v1/accounts/{}/balance",
+            base_url(),
+            loan_account_id
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -145,7 +159,11 @@ async fn test_loan_lifecycle() {
     // Interest calculation: $10,000 * 8.5% / 365 = 2.3287 -> rounds to 2.33.
     // Negative debt balance increases (becomes more negative) to -10,002.33.
     let loan_bal_after: Value = c
-        .get(format!("{}/api/v1/accounts/{}/balance", base_url(), loan_account_id))
+        .get(format!(
+            "{}/api/v1/accounts/{}/balance",
+            base_url(),
+            loan_account_id
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -172,7 +190,11 @@ async fn test_loan_lifecycle() {
 
     // Verify balances after repayment: chequing = 9000, loan = -9002.33
     let chequing_bal_after_repay: Value = c
-        .get(format!("{}/api/v1/accounts/{}/balance", base_url(), chequing_id))
+        .get(format!(
+            "{}/api/v1/accounts/{}/balance",
+            base_url(),
+            chequing_id
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -183,7 +205,11 @@ async fn test_loan_lifecycle() {
     assert_eq!(as_num(&chequing_bal_after_repay["balance"]), 9000.00);
 
     let loan_bal_after_repay: Value = c
-        .get(format!("{}/api/v1/accounts/{}/balance", base_url(), loan_account_id))
+        .get(format!(
+            "{}/api/v1/accounts/{}/balance",
+            base_url(),
+            loan_account_id
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -210,7 +236,11 @@ async fn test_loan_lifecycle() {
 
     // Verify that loan is closed and loan account has balance 0
     let loan_bal_closed: Value = c
-        .get(format!("{}/api/v1/accounts/{}/balance", base_url(), loan_account_id))
+        .get(format!(
+            "{}/api/v1/accounts/{}/balance",
+            base_url(),
+            loan_account_id
+        ))
         .bearer_auth(&token)
         .send()
         .await

@@ -79,7 +79,11 @@ async fn send_requires_auth() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 401, "unauthenticated send must be 401");
+    assert_eq!(
+        resp.status().as_u16(),
+        401,
+        "unauthenticated send must be 401"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +111,11 @@ async fn send_to_autodeposit_handle_credits_recipient() {
         json!({ "handle_type": "email", "handle_value": handle, "deposit_account_id": b_acct }),
     )
     .await;
-    assert!(reg.status().is_success(), "register autodeposit: {}", reg.status());
+    assert!(
+        reg.status().is_success(),
+        "register autodeposit: {}",
+        reg.status()
+    );
 
     let resp = send_etransfer(
         &c,
@@ -128,8 +136,14 @@ async fn send_to_autodeposit_handle_credits_recipient() {
 
 /// Send an "available" external transfer with a security Q&A; returns its id, or
 /// `None` if the core is down.
-async fn send_available(c: &reqwest::Client, a_token: &str, from: Uuid, amount: f64,
-                        handle: &str, answer: &str) -> Option<Uuid> {
+async fn send_available(
+    c: &reqwest::Client,
+    a_token: &str,
+    from: Uuid,
+    amount: f64,
+    handle: &str,
+    answer: &str,
+) -> Option<Uuid> {
     let resp = send_etransfer(
         c,
         a_token,
@@ -144,7 +158,10 @@ async fn send_available(c: &reqwest::Client, a_token: &str, from: Uuid, amount: 
     }
     assert!(resp.status().is_success(), "send: {}", resp.status());
     let v: Value = resp.json().await.unwrap();
-    assert_eq!(v["status"], "available", "held transfer should be available: {v}");
+    assert_eq!(
+        v["status"], "available",
+        "held transfer should be available: {v}"
+    );
     Some(Uuid::parse_str(v["etransfer_id"].as_str().unwrap()).unwrap())
 }
 
@@ -175,7 +192,10 @@ async fn send_then_claim_with_correct_answer_deposits() {
     .await;
     assert!(resp.status().is_success(), "claim: {}", resp.status());
     let claimed: Value = resp.json().await.unwrap();
-    assert_eq!(claimed["status"], "deposited", "claim should deposit: {claimed}");
+    assert_eq!(
+        claimed["status"], "deposited",
+        "claim should deposit: {claimed}"
+    );
     assert_eq!(balance(&c, &b_token, b_acct).await, 75.0);
 
     // Claiming records B as the recipient, so B retains the receipt: a GET by B
@@ -187,9 +207,16 @@ async fn send_then_claim_with_correct_answer_deposits() {
         .send()
         .await
         .unwrap();
-    assert_eq!(get.status().as_u16(), 200, "claimant should see the transfer after claiming");
+    assert_eq!(
+        get.status().as_u16(),
+        200,
+        "claimant should see the transfer after claiming"
+    );
     let seen: Value = get.json().await.unwrap();
-    assert_eq!(seen["status"], "deposited", "claimant's GET should show deposited: {seen}");
+    assert_eq!(
+        seen["status"], "deposited",
+        "claimant's GET should show deposited: {seen}"
+    );
 
     // ...and it appears in B's e-Transfer history.
     let list: Value = c
@@ -202,7 +229,10 @@ async fn send_then_claim_with_correct_answer_deposits() {
         .await
         .unwrap();
     assert!(
-        list.as_array().unwrap().iter().any(|e| e["etransfer_id"] == claimed["etransfer_id"]),
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["etransfer_id"] == claimed["etransfer_id"]),
         "claimed transfer should appear in B's list: {list}"
     );
 }
@@ -274,7 +304,11 @@ async fn decline_by_non_recipient_is_404() {
         json!({}),
     )
     .await;
-    assert_eq!(resp.status().as_u16(), 404, "non-recipient decline must be 404");
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "non-recipient decline must be 404"
+    );
     // The transfer is untouched (still available).
     assert_eq!(get_etransfer(&c, &a_token, id).await["status"], "available");
 }
@@ -313,7 +347,11 @@ async fn cancel_by_non_sender_is_404_but_sender_can_cancel() {
         json!({}),
     )
     .await;
-    assert!(resp.status().is_success(), "sender cancel: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "sender cancel: {}",
+        resp.status()
+    );
     assert_eq!(get_etransfer(&c, &a_token, id).await["status"], "cancelled");
     // Funds returned: started 500, sent 30 (held), cancelled -> back to 500.
     assert_eq!(balance(&c, &a_token, from).await, 500.0);
